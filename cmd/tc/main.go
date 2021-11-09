@@ -44,6 +44,7 @@ func main() {
 					configPath := c.String("config")
 					serverNode := c.Int64("serverNode")
 
+					//读取配置文件到结构体 config.Configuration 里
 					cfg, err := resolveConfiguration(configPath)
 					if err != nil || cfg == nil {
 						return err
@@ -58,6 +59,7 @@ func main() {
 						log.Fatalf("failed to listen: %v", err)
 					}
 
+					//grpc keepalive配置
 					s := grpc.NewServer(grpc.KeepaliveEnforcementPolicy(cfg.GetEnforcementPolicy()),
 						grpc.KeepaliveParams(cfg.GetServerParameters()))
 

@@ -62,6 +62,7 @@ func (p *Parser) Parse(in []byte, v interface{}) error {
 		return err
 	}
 
+	//以seata开头的环境变量，替换config.yml里的配置信息
 	for _, envVar := range p.env {
 		pathStr := envVar.name
 		if strings.HasPrefix(pathStr, strings.ToUpper(p.prefix)+"_") {
