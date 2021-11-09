@@ -42,7 +42,7 @@ func Register(name string, factory StorageDriverFactory) {
 // registered with the given name. If no drivers are found, an
 // InvalidStorageDriverError is returned
 func Create(name string, parameters map[string]interface{}) (storage.Driver, error) {
-	//driverFactories 初始化 pkg/tc/storage/driver 里inmemory, mysql, pgsql的init里，而且都在tc的main.go里import了
+	//driverFactories 初始化，使用pkg/tc/storage/driver里的inmemory, mysql, pgsql的init，而且都在tc的main.go里import了
 	driverFactory, ok := driverFactories[name]
 	if !ok {
 		return nil, InvalidStorageDriverError{name}
