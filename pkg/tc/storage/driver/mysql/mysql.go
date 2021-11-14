@@ -233,7 +233,7 @@ func (driver *driver) FindGlobalSessions(statuses []apis.GlobalSession_GlobalSta
 	err := driver.engine.Table(driver.globalTable).
 		Where(builder.In("status", statuses)).
 		OrderBy("gmt_modified").
-		Limit(driver.queryLimit).
+		Limit(driver.queryLimit).	//默认100
 		Find(&globalSessions)
 
 	if err != nil {
@@ -338,6 +338,8 @@ func (driver *driver) UpdateBranchSessionStatus(session *apis.BranchSession, sta
 }
 
 // Remove branch session.
+//删除branch_table里的记录
+//branch_id是主键，只需要where branch_id 就行了吧？？？
 func (driver *driver) RemoveBranchSession(globalSession *apis.GlobalSession, session *apis.BranchSession) error {
 	_, err := driver.engine.Exec(fmt.Sprintf(DeleteBranchTransaction, driver.branchTable),
 		session.XID,
@@ -442,6 +444,7 @@ func contains(s []string, e string) bool {
 }
 
 // ReleaseLock Unlock boolean.
+//删除lock_table表里，所有row_key等于rowLocks里的RowKey的，并且xid等于rowLocks里第一个的xid，它们的xid都是一样的，都是来自同一个branch_table
 func (driver *driver) ReleaseLock(rowLocks []*apis.RowLock) bool {
 	if rowLocks != nil && len(rowLocks) == 0 {
 		return true

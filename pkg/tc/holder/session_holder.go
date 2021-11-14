@@ -22,6 +22,7 @@ func (holder *SessionHolder) FindGlobalSession(xid string) *apis.GlobalSession {
 	return holder.manager.FindGlobalSession(xid)
 }
 
+//将xid的global_table数据，与它下面具有相同xid的branch_table的数据组成的map，组合成GlobalTransaction对象
 func (holder *SessionHolder) FindGlobalTransaction(xid string) *model.GlobalTransaction {
 	globalSession := holder.manager.FindGlobalSession(xid)
 	if globalSession != nil {
@@ -61,23 +62,29 @@ func (holder *SessionHolder) findGlobalTransactions(statuses []apis.GlobalSessio
 	return holder.findGlobalTransactionsByGlobalSessions(gts)
 }
 
+//找到状态为statuses的global_table和branch_table组成的数据
 func (holder *SessionHolder) findGlobalTransactionsWithAddressingIdentities(statuses []apis.GlobalSession_GlobalStatus,
 	addressingIdentities []string) []*model.GlobalTransaction {
+	//找到表global_table里，status in statuses and addressing in addressingIdentities 的 GlobalSession，也就是global_table表数据
 	gts := holder.manager.FindGlobalSessionsWithAddressingIdentities(statuses, addressingIdentities)
 	return holder.findGlobalTransactionsByGlobalSessions(gts)
 }
 
+//查表，将具有相同xid的branch放到一起，组成一个GlobalTransaction，然后把这些GlobalTransaction返回
 func (holder *SessionHolder) findGlobalTransactionsByGlobalSessions(sessions []*apis.GlobalSession) []*model.GlobalTransaction {
 	if len(sessions) == 0 {
 		return nil
 	}
 
+	//所有XID放到xids里
 	xids := make([]string, 0, len(sessions))
 	for _, gt := range sessions {
 		xids = append(xids, gt.XID)
 	}
+	//从表branch_table里找到所有xid in xids的数据，放到branchSessions里，BranchSession的结构对应branch_table，跟GlobalSession一样，只是去掉了创建修改时间
 	branchSessions := holder.manager.FindBatchBranchSessions(xids)
 	branchSessionMap := make(map[string][]*apis.BranchSession)
+	//将branchSessions归类，相同的XID放到一起，组成一个XID映射branchSessions切片的map
 	for i := 0; i < len(branchSessions); i++ {
 		branchSessionSlice, ok := branchSessionMap[branchSessions[i].XID]
 		if ok {
@@ -90,11 +97,13 @@ func (holder *SessionHolder) findGlobalTransactionsByGlobalSessions(sessions []*
 		}
 	}
 
+	//将包含GlobalSession对象的指针和与这个GlobalSession具有相同xid的BranchSession组成的指针的key的map，放到一个GlobalTransaction对象里
+	//然后将这些对象合并成一个指针切片，返回
 	globalTransactions := make([]*model.GlobalTransaction, 0, len(sessions))
 	for j := 0; j < len(sessions); j++ {
 		globalTransaction := &model.GlobalTransaction{
 			GlobalSession:  sessions[j],
-			BranchSessions: map[*apis.BranchSession]bool{},
+			BranchSessions: map[*apis.BranchSession]bool{},	//初始化了一个空map
 		}
 
 		branchSessionSlice := branchSessionMap[sessions[j].XID]
@@ -117,6 +126,7 @@ func (holder *SessionHolder) AllSessions() []*apis.GlobalSession {
 	return holder.manager.AllSessions()
 }
 
+//修改global_table状态
 func (holder *SessionHolder) UpdateGlobalSessionStatus(session *apis.GlobalSession, status apis.GlobalSession_GlobalStatus) error {
 	session.Status = status
 	return holder.manager.UpdateGlobalSessionStatus(session, status)
@@ -131,6 +141,7 @@ func (holder *SessionHolder) RemoveGlobalSession(session *apis.GlobalSession) er
 	return holder.manager.RemoveGlobalSession(session)
 }
 
+//删除globalTransaction里对应的所有global_table和branch_table的记录
 func (holder *SessionHolder) RemoveGlobalTransaction(globalTransaction *model.GlobalTransaction) error {
 	err := holder.manager.RemoveGlobalSession(globalTransaction.GlobalSession)
 	if err != nil {

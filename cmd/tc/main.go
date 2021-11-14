@@ -63,11 +63,15 @@ func main() {
 					s := grpc.NewServer(grpc.KeepaliveEnforcementPolicy(cfg.GetEnforcementPolicy()),
 						grpc.KeepaliveParams(cfg.GetServerParameters()))
 
+					//生成tc对象，并且启动4个gorouting
 					tc := server.NewTransactionCoordinator(cfg)
+					//注册grpc的TransactionManagerService，给tm提供接口
 					apis.RegisterTransactionManagerServiceServer(s, tc)
+					//注册grpc的ResourceManagerService，给tc提供接口
 					apis.RegisterResourceManagerServiceServer(s, tc)
 
 					go func() {
+						//启动了一个http端口为10001的服务，不知道做什么？？？
 						err = http.ListenAndServe(":10001", nil)
 						if err != nil {
 							return

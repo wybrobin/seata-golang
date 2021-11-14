@@ -53,6 +53,7 @@ func (c *RootContext) Get(key string) (value interface{}, exists bool) {
 }
 
 // GetXID from RootContext get xid
+//如果localMap里有key为"TX_XID"，则取出value返回，否则取key为"tx-xid-interceptor-type"的，且value包含_，那么取出_前面的字符串，这俩都没有就返回空字符串
 func (c *RootContext) GetXID() string {
 	xID := c.localMap[KeyXID]
 	xid, ok := xID.(string)

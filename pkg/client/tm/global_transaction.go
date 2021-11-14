@@ -72,6 +72,7 @@ func (gtx *DefaultGlobalTransaction) BeginWithTimeout(timeout int32, ctx *ctx.Ro
 }
 
 func (gtx *DefaultGlobalTransaction) BeginWithTimeoutAndName(timeout int32, name string, ctx *ctx.RootContext) error {
+	//如果不是发起者，而且xid还是空，就有问题
 	if gtx.Role != Launcher {
 		if gtx.XID == "" {
 			return errors.New("xid should not be empty")
@@ -79,16 +80,19 @@ func (gtx *DefaultGlobalTransaction) BeginWithTimeoutAndName(timeout int32, name
 		log.Debugf("Ignore Begin(): just involved in global transaction [%s]", gtx.XID)
 		return nil
 	}
+	//Participant参与者不应该开启事务，因为Participant参与者的XID才不为空
 	if gtx.XID != "" {
 		return errors.New("xid should be empty")
 	}
 	if ctx.InGlobalTransaction() {
 		return errors.New("xid should be empty")
 	}
+	//调用grpc的Begin，这个Begin是包装过的，真正的grpc调用还在里面
 	xid, err := gtx.transactionManager.Begin(ctx, name, timeout)
 	if err != nil {
 		return errors.WithStack(err)
 	}
+	//记下返回的xid，状态改为apis.Begin
 	gtx.XID = xid
 	gtx.Status = apis.Begin
 	ctx.Bind(xid)
@@ -98,6 +102,7 @@ func (gtx *DefaultGlobalTransaction) BeginWithTimeoutAndName(timeout int32, name
 
 func (gtx *DefaultGlobalTransaction) Commit(ctx *ctx.RootContext) error {
 	defer func() {
+		//执行完成后，将xid从RootContext里删除
 		ctxXid := ctx.GetXID()
 		if ctxXid != "" && gtx.XID == ctxXid {
 			ctx.Unbind()
@@ -130,6 +135,7 @@ func (gtx *DefaultGlobalTransaction) Commit(ctx *ctx.RootContext) error {
 
 func (gtx *DefaultGlobalTransaction) Rollback(ctx *ctx.RootContext) error {
 	defer func() {
+		//执行完成后，将xid从RootContext里删除
 		ctxXid := ctx.GetXID()
 		if ctxXid != "" && gtx.XID == ctxXid {
 			ctx.Unbind()
@@ -142,8 +148,10 @@ func (gtx *DefaultGlobalTransaction) Rollback(ctx *ctx.RootContext) error {
 	if gtx.XID == "" {
 		return errors.New("xid should not be empty")
 	}
+	//这个是从配置里拿的，就是tx的配置，sample里是5
 	retry := gtx.conf.RollbackRetryCount
 	for retry > 0 {
+		//里面封装了一下grpc的调用，传递一个xid，返回是否成功
 		status, err := gtx.transactionManager.Rollback(ctx, gtx.XID)
 		if err != nil {
 			log.Errorf("failed to report global rollback [%s],Retry Countdown: %d, reason: %s", gtx.XID, retry, err.Error())
@@ -160,6 +168,7 @@ func (gtx *DefaultGlobalTransaction) Rollback(ctx *ctx.RootContext) error {
 	return nil
 }
 
+//unbindXid==true且RootContext里的localMap里有XID则删除，然后将xid保存到SuspendedResourcesHolder对象返回
 func (gtx *DefaultGlobalTransaction) Suspend(unbindXid bool, ctx *ctx.RootContext) (*SuspendedResourcesHolder, error) {
 	xid := ctx.GetXID()
 	if xid != "" && unbindXid {
@@ -252,6 +261,10 @@ func GetCurrent(ctx *ctx.RootContext) *DefaultGlobalTransaction {
 	}
 }
 
+//查看 RootContext 里的localMap里有没有XID，有就创建Status=apis.Begin，Role=Participant，XID写拿到的XID的 DefaultGlobalTransaction。
+//没有就创建一个Status=apis.UnknownGlobalStatus，Role=Launcher，XID为空字符串的 DefaultGlobalTransaction。
+//他们都有一个transactionManager，这个值在tm的sample main代码里，需要调用client.Init(conf)的时候创建的 TransactionManager，
+//它是一个rpc客户端，连接tc这个rpc服务端用的
 func GetCurrentOrCreate(ctx *ctx.RootContext) *DefaultGlobalTransaction {
 	tx := GetCurrent(ctx)
 	if tx == nil {

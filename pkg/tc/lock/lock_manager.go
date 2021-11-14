@@ -33,6 +33,7 @@ func (locker *LockManager) AcquireLock(branchSession *apis.BranchSession) bool {
 	return locker.manager.AcquireLock(locks)
 }
 
+//删除branch_table缓存在BranchSession对象里的一条记录里，通过resource_id和lock_key对应的所有lock_table里的记录
 func (locker *LockManager) ReleaseLock(branchSession *apis.BranchSession) bool {
 	if branchSession == nil {
 		log.Debug("branchSession can't be null for memory/file locker.")
@@ -51,6 +52,7 @@ func (locker *LockManager) ReleaseLock(branchSession *apis.BranchSession) bool {
 	return locker.manager.ReleaseLock(locks)
 }
 
+//删除globalTransaction对应的global_table记录下的所有branch_table的所有lock_table的记录
 func (locker *LockManager) ReleaseGlobalSessionLock(globalTransaction *model.GlobalTransaction) bool {
 	locks := make([]*apis.RowLock, 0)
 	for branchSession := range globalTransaction.BranchSessions {

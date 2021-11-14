@@ -44,8 +44,8 @@ type TransactionCoordinator struct {
 
 	streamMessageTimeout time.Duration
 
-	holder             *holder.SessionHolder
-	resourceDataLocker *lock.LockManager
+	holder             *holder.SessionHolder	//感觉这个都是操作global_table和branch_table表的
+	resourceDataLocker *lock.LockManager	//感觉这个都是操作lock_table表的
 	locker             GlobalSessionLocker
 
 	idGenerator        *atomic.Uint64
@@ -55,6 +55,7 @@ type TransactionCoordinator struct {
 }
 
 func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinator {
+	//根据config.yml里的配置，生成一个storage.Driver对象，这个对象可能是mysql.driver、pgsql.driver或inmemory.driver
 	driver, err := factory.Create(conf.Storage.Type(), conf.Storage.Parameters())
 	if err != nil {
 		log.Fatalf("failed to construct %s driver: %v", conf.Storage.Type(), err)
@@ -72,18 +73,22 @@ func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinat
 
 		streamMessageTimeout: conf.Server.StreamMessageTimeout,
 
-		holder:             holder.NewSessionHolder(driver),
-		resourceDataLocker: lock.NewLockManager(driver),
-		locker:             new(UnimplementedGlobalSessionLocker),
+		holder:             holder.NewSessionHolder(driver),	//storage.Driver 接口继承了 storage.SessionManager，SessionHolder里包含了一个SessionManager对象
+		resourceDataLocker: lock.NewLockManager(driver),		//storage.Driver 接口继承了 storage.LockManager，lock.LockManager里包含了一个storage.LockManager
+		locker:             new(UnimplementedGlobalSessionLocker),	//全局session lock 里的TryLock和Unlock是空实现？
 
 		idGenerator:        &atomic.Uint64{},
 		futures:            &sync.Map{},
 		activeApplications: &sync.Map{},
 		callBackMessages:   &sync.Map{},
 	}
+	//每秒检查一次超时的，放到管道event.EventBus.GlobalTransactionEventChannel里
 	go tc.processTimeoutCheck()
+	//找到global_table表里status是AsyncCommitting的数据，对它们branch进行分析，然后判断是否commit
 	go tc.processAsyncCommitting()
+	//处理status为CommitRetrying的global_table和branch_table数据，对它们branch进行分析，然后判断是否将状态改为commit
 	go tc.processRetryCommitting()
+	//处理status为RollingBack、RollbackRetrying、TimeoutRollingBack、TimeoutRollbackRetrying的global_table和branch_table数据，对它们branch进行分析，然后判断是否将状态改为rollback
 	go tc.processRetryRollingBack()
 
 	return tc
@@ -225,22 +230,26 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 	}, nil
 }
 
+//检查GlobalTransaction里所有branch的状态，决定是否commit，然后删除对应的表数据
 func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, retrying bool) (bool, error) {
 	var err error
 
 	runtime.GoWithRecover(func() {
+		//创建一个GlobalTransactionEvent对象，扔到event.EventBus.GlobalTransactionEventChannel管道里
 		evt := event.NewGlobalTransactionEvent(gt.TransactionID, event.RoleTC, gt.TransactionName, gt.BeginTime, 0, gt.Status)
 		event.EventBus.GlobalTransactionEventChannel <- evt
 	}, nil)
 
-	if gt.IsSaga() {
+	if gt.IsSaga() {//如果branch里有一个branch_type是2，就算saga，然后就报错，saga不支持
 		return false, status.Errorf(codes.Unimplemented, "method Commit not supported saga mode")
 	}
 
 	for bs := range gt.BranchSessions {
+		//如果状态为PhaseOneFailed，则从branch_table表中删除
 		if bs.Status == apis.PhaseOneFailed {
 			tc.resourceDataLocker.ReleaseLock(bs)
 			delete(gt.BranchSessions, bs)
+			//删除branch_table表中xid和branch_id与bs里保存相等的
 			err = tc.holder.RemoveBranchSession(gt.GlobalSession, bs)
 			if err != nil {
 				return false, err
@@ -251,6 +260,7 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 		if err1 != nil {
 			log.Errorf("exception committing branch xid=%d branchID=%d, err: %v", bs.GetXID(), bs.BranchID, err1)
 			if !retrying {
+				//改global_table表xid对应的状态为CommitRetrying
 				err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.CommitRetrying)
 				if err != nil {
 					return false, err
@@ -260,8 +270,10 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 		}
 		switch branchStatus {
 		case apis.PhaseTwoCommitted:
+			//删除bs对应的branch_table的一条记录下对应所有lock_table表记录
 			tc.resourceDataLocker.ReleaseLock(bs)
 			delete(gt.BranchSessions, bs)
+			//删除branch_table表中bs记录，gt.GlobalSession参数只有inmemory的时候有用
 			err = tc.holder.RemoveBranchSession(gt.GlobalSession, bs)
 			if err != nil {
 				return false, err
@@ -269,10 +281,10 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 			continue
 		case apis.PhaseTwoCommitFailedCanNotRetry:
 			{
-				if gt.CanBeCommittedAsync() {
+				if gt.CanBeCommittedAsync() {	//不是TCC
 					log.Errorf("by [%s], failed to commit branch %v", bs.Status.String(), bs)
 					continue
-				} else {
+				} else {//是TCC
 					// change status first, if need retention global session data,
 					// might not remove global session, then, the status is very important.
 					err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.CommitFailed)
@@ -307,6 +319,11 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 			}
 		}
 	}
+
+	//能到这里的bs是status==PhaseOneFailed 或 PhaseTwoCommitted 或 PhaseTwoCommitFailedCanNotRetry且不是TCC 或 其他状态且不是TCC
+	//我理解就是已经完事了的，要么彻底失败，要么彻底成功的
+
+	//这里只是检查一下是否有branch？？？为啥不用gt直接检查，要生成一个gs？
 	gs := tc.holder.FindGlobalTransaction(gt.XID)
 	if gs != nil && gs.HasBranch() {
 		log.Infof("global[%d] committing is NOT done.", gt.XID)
@@ -315,11 +332,15 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 
 	// change status first, if need retention global session data,
 	// might not remove global session, then, the status is very important.
+	//没看到这行注释什么意思，已经要删了，为啥还要修改状态？？？
 	err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.Committed)
 	if err != nil {
 		return false, err
 	}
+
+	//删除gt的lock_table相关所有内容
 	tc.resourceDataLocker.ReleaseGlobalSessionLock(gt)
+	//删除gt的global_table和branch_table相关所有内容
 	err = tc.holder.RemoveGlobalTransaction(gt)
 	if err != nil {
 		return false, err
@@ -334,6 +355,7 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 	return true, err
 }
 
+//将bs序列化后，给个自增的ID，塞到tc.callBackMessages里的chan里。再将自增ID存到tc.futures里，等待30s等其他gorouting处理
 func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.BranchSession_BranchStatus, error) {
 	request := &apis.BranchCommitRequest{
 		XID:             bs.XID,
@@ -355,8 +377,12 @@ func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.Bra
 		Message:           content,
 	}
 
+	//在tc.callBackMessages这个map里读取branch_table的addressing，如果读取到则返回，如果没读取到，则新建make(chan *apis.BranchMessage)并返回
+	//应该是通过tc.callBackMessages这个sync.map与另一个gorouting通信，这边负责塞数据
 	queue, _ := tc.callBackMessages.LoadOrStore(bs.Addressing, make(chan *apis.BranchMessage))
 	q := queue.(chan *apis.BranchMessage)
+	//往q这个chan里放入message，如果塞不进去，就返回
+	//如果是新创建的chan，应该是塞不进去的，直接就default了，只有之前有的，有其他gorouting监听了，才能塞进去
 	select {
 	case q <- message:
 	default:
@@ -364,8 +390,10 @@ func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.Bra
 	}
 
 	resp := common2.NewMessageFuture(message)
+	//存储到tc.futures这个sync.map里，应该是有其他的gorouting去扫描这个tc.futures，去定时消耗里面的内容，然后把resp.Done给关掉
 	tc.futures.Store(message.ID, resp)
 
+	//30s后从tc.futures中删除这个本地原子自增的ID，然后报超时错误
 	timer := time.NewTimer(tc.streamMessageTimeout)
 	select {
 	case <-timer.C:
@@ -375,6 +403,8 @@ func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.Bra
 		timer.Stop()
 	}
 
+	//消耗tc.futures的gorouting应该会将里面的value的resp.Response塞入apis.BranchCommitResponse数据
+	//也就是两个gorouting通过tc.futures这个sync.map传递消息
 	response, ok := resp.Response.(*apis.BranchCommitResponse)
 	if !ok {
 		log.Infof("rollback response: %v", resp.Response)
@@ -447,6 +477,7 @@ func (tc *TransactionCoordinator) Rollback(ctx context.Context, request *apis.Gl
 	}, nil
 }
 
+//跟 doGlobalCommit 有点像
 func (tc *TransactionCoordinator) doGlobalRollback(gt *model.GlobalTransaction, retrying bool) (bool, error) {
 	var err error
 
@@ -547,6 +578,7 @@ func (tc *TransactionCoordinator) doGlobalRollback(gt *model.GlobalTransaction, 
 		return false, nil
 	}
 
+	//回滚分为超时回滚，这个要在最终状态写清楚
 	if gt.IsTimeoutGlobalStatus() {
 		err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.TimeoutRolledBack)
 		if err != nil {
@@ -573,6 +605,7 @@ func (tc *TransactionCoordinator) doGlobalRollback(gt *model.GlobalTransaction, 
 	return true, err
 }
 
+//跟 branchCommit 比较像
 func (tc *TransactionCoordinator) branchRollback(bs *apis.BranchSession) (apis.BranchSession_BranchStatus, error) {
 	request := &apis.BranchRollbackRequest{
 		XID:             bs.XID,
@@ -589,10 +622,11 @@ func (tc *TransactionCoordinator) branchRollback(bs *apis.BranchSession) (apis.B
 	}
 	message := &apis.BranchMessage{
 		ID:                int64(tc.idGenerator.Inc()),
-		BranchMessageType: apis.TypeBranchRollback,
+		BranchMessageType: apis.TypeBranchRollback,	//跟 branchCommit 区别是这里类型不一样
 		Message:           content,
 	}
 
+	//也是写到tc.callBackMessages sync.map里，等其他取，是BranchCommunicate函数，看到是个grpc与RM stream通信的
 	queue, _ := tc.callBackMessages.LoadOrStore(bs.Addressing, make(chan *apis.BranchMessage))
 	q := queue.(chan *apis.BranchMessage)
 	select {
@@ -602,6 +636,7 @@ func (tc *TransactionCoordinator) branchRollback(bs *apis.BranchSession) (apis.B
 	}
 
 	resp := common2.NewMessageFuture(message)
+	//放到tc.futures里，也是给 BranchCommunicate 函数，跟RM通信的
 	tc.futures.Store(message.ID, resp)
 
 	timer := time.NewTimer(tc.streamMessageTimeout)
@@ -614,6 +649,7 @@ func (tc *TransactionCoordinator) branchRollback(bs *apis.BranchSession) (apis.B
 		timer.Stop()
 	}
 
+	//等BranchCommunicate传true到resp.Done里，这里以后可能还会用到，所有没有close，虽然close也可以触发
 	response := resp.Response.(*apis.BranchRollbackResponse)
 	if response.ResultCode == apis.ResultCodeSuccess {
 		return response.BranchStatus, nil
@@ -873,7 +909,7 @@ func (tc *TransactionCoordinator) processRetryCommitting() {
 }
 
 func (tc *TransactionCoordinator) processAsyncCommitting() {
-	for {
+	for {//默认配置1s
 		timer := time.NewTimer(tc.asyncCommittingRetryPeriod)
 
 		<-timer.C
@@ -883,30 +919,35 @@ func (tc *TransactionCoordinator) processAsyncCommitting() {
 	}
 }
 
+//查表global_table，找出gmt_modified前100个，status为Begin的所有数据，这些数据中，如果已经超时了，就把active=0，status=TimeoutRollingBack，
+//然后扔到 event.EventBus.GlobalTransactionEventChannel 管道中
 func (tc *TransactionCoordinator) timeoutCheck() {
+	//查表global_table，找出gmt_modified前100个，status为1的所有数据，放到GlobalSession结构里，GlobalSession与表global_table的结构一样，只是少了时间戳
 	sessions := tc.holder.FindGlobalSessions([]apis.GlobalSession_GlobalStatus{apis.Begin})
 	if len(sessions) == 0 {
 		return
 	}
 	for _, globalSession := range sessions {
-		if isGlobalSessionTimeout(globalSession) {
-			result, err := tc.locker.TryLock(globalSession, time.Duration(globalSession.Timeout)*time.Millisecond)
-			if err == nil && result {
+		if isGlobalSessionTimeout(globalSession) {	//如果当前时间-begin_time>timeout，就是已经超时了
+			result, err := tc.locker.TryLock(globalSession, time.Duration(globalSession.Timeout)*time.Millisecond)	//空实现，必返回true
+			if err == nil && result {//必定执行这里
 				if globalSession.Active {
 					// Active need persistence
 					// Highlight: Firstly, close the session, then no more branch can be registered.
-					err = tc.holder.InactiveGlobalSession(globalSession)
+					err = tc.holder.InactiveGlobalSession(globalSession)	//将global_table当前xid对应表里的active=0，gmt_modified=now
 					if err != nil {
 						return
 					}
 				}
-
+				//将表global_table里为xid的那行status=TimeoutRollingBack，gmt_modified=now
+				//同时修改globalSession对象的状态
 				err = tc.holder.UpdateGlobalSessionStatus(globalSession, apis.TimeoutRollingBack)
 				if err != nil {
 					return
 				}
 
-				tc.locker.Unlock(globalSession)
+				tc.locker.Unlock(globalSession)	//空实现
+				//返回一个GlobalTransactionEvent对象
 				evt := event.NewGlobalTransactionEvent(globalSession.TransactionID, event.RoleTC, globalSession.TransactionName, globalSession.BeginTime, 0, globalSession.Status)
 				event.EventBus.GlobalTransactionEventChannel <- evt
 			}
@@ -919,15 +960,17 @@ func (tc *TransactionCoordinator) handleRetryRollingBack() {
 	if len(addressingIdentities) == 0 {
 		return
 	}
+	//RollingBack, RollbackRetrying, TimeoutRollingBack, TimeoutRollbackRetrying，找到这些状态组成的GlobalTransaction切片
 	rollbackTransactions := tc.holder.FindRetryRollbackGlobalTransactions(addressingIdentities)
 	if len(rollbackTransactions) == 0 {
 		return
 	}
 	now := time2.CurrentTimeMillis()
 	for _, transaction := range rollbackTransactions {
-		if transaction.Status == apis.RollingBack && !transaction.IsRollingBackDead() {
+		if transaction.Status == apis.RollingBack && !transaction.IsRollingBackDead() { //不大于12s？？？
 			continue
 		}
+		//默认配置maxRollbackRetryTimeout为-1，不会进这里
 		if isRetryTimeout(int64(now), tc.maxRollbackRetryTimeout, transaction.BeginTime) {
 			if tc.rollbackRetryTimeoutUnlockEnable {
 				tc.resourceDataLocker.ReleaseGlobalSessionLock(transaction)
@@ -958,12 +1001,14 @@ func (tc *TransactionCoordinator) handleRetryCommitting() {
 	if len(addressingIdentities) == 0 {
 		return
 	}
+	//找到status为CommitRetrying的global_table和branch_table数据，组成的GlobalTransaction切片
 	committingTransactions := tc.holder.FindRetryCommittingGlobalTransactions(addressingIdentities)
 	if len(committingTransactions) == 0 {
 		return
 	}
 	now := time2.CurrentTimeMillis()
 	for _, transaction := range committingTransactions {
+		//默认配置设置成了-1，也就是这里是false
 		if isRetryTimeout(int64(now), tc.maxCommitRetryTimeout, transaction.BeginTime) {
 			err := tc.holder.RemoveGlobalTransaction(transaction)
 			if err != nil {
@@ -980,16 +1025,19 @@ func (tc *TransactionCoordinator) handleRetryCommitting() {
 }
 
 func (tc *TransactionCoordinator) handleAsyncCommitting() {
-	addressingIdentities := tc.getAddressingIdentities()
+	addressingIdentities := tc.getAddressingIdentities()	//将activeApplications map里 value>0的所有key组成一个切片返回
 	if len(addressingIdentities) == 0 {
 		return
 	}
+	//找到status是AsyncCommitting并且addressing为activeApplications里所有key的GlobalSession，
+	//然后将包含这些GlobalSession对象的指针和与这个GlobalSession具有相同xid的BranchSession组成的指针的key的map，放到一个GlobalTransaction对象里
+	//最后将这些对象合并成一个指针切片，返回。GlobalTransaction继承GlobalSession，多了相同xid的BranchSession切片
 	asyncCommittingTransactions := tc.holder.FindAsyncCommittingGlobalTransactions(addressingIdentities)
 	if len(asyncCommittingTransactions) == 0 {
 		return
 	}
 	for _, transaction := range asyncCommittingTransactions {
-		if transaction.Status != apis.AsyncCommitting {
+		if transaction.Status != apis.AsyncCommitting {//再次筛选，防止出错
 			continue
 		}
 		_, err := tc.doGlobalCommit(transaction, true)
@@ -999,6 +1047,7 @@ func (tc *TransactionCoordinator) handleAsyncCommitting() {
 	}
 }
 
+//获取tc.activeApplications这个map里的所有key
 func (tc *TransactionCoordinator) getAddressingIdentities() []string {
 	var addressIdentities []string
 	tc.activeApplications.Range(func(key, value interface{}) bool {
@@ -1013,5 +1062,6 @@ func (tc *TransactionCoordinator) getAddressingIdentities() []string {
 }
 
 func isGlobalSessionTimeout(gt *apis.GlobalSession) bool {
+	//为啥不用 time.Now().UnixMilli() ？？？
 	return (time2.CurrentTimeMillis() - uint64(gt.BeginTime)) > uint64(gt.Timeout)
 }

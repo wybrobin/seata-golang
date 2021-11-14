@@ -21,6 +21,7 @@ func CollectRowLocks(lockKey string, resourceID string, xid string) []*apis.RowL
 	return collectRowLocks(lockKey, resourceID, xid, common.GetTransactionID(xid), 0)
 }
 
+//将branch_table表的lock_key字段通过;:,拆开，存到RowLock（对应表lock_table），组成切片返回
 func collectRowLocks(lockKey string,
 	resourceID string,
 	xid string,
@@ -49,6 +50,7 @@ func collectRowLocks(lockKey string,
 
 			for _, pk := range pks {
 				if pk != "" {
+					//RowLock对应表lock_table
 					rowLock := &apis.RowLock{
 						XID:           xid,
 						TransactionID: transactionID,
@@ -56,7 +58,7 @@ func collectRowLocks(lockKey string,
 						ResourceID:    resourceID,
 						TableName:     tableName,
 						PK:            pk,
-						RowKey:        getRowKey(resourceID, tableName, pk),
+						RowKey:        getRowKey(resourceID, tableName, pk),	//用resourceID、tableName、pk组成一个主键，为什么不把这3个字段作为联合主键？
 					}
 					locks = append(locks, rowLock)
 				}
