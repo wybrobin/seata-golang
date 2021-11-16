@@ -94,8 +94,10 @@ func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinat
 	return tc
 }
 
+//tc收到tm的获取xid的请求
 func (tc *TransactionCoordinator) Begin(ctx context.Context, request *apis.GlobalBeginRequest) (*apis.GlobalBeginResponse, error) {
 	transactionID := uuid.NextID()
+	//xid格式：addressing:tranID，这样就是具有不通addressing名字的，也就是不同的tm，但用相同的tc，他们加起来超过每毫秒4096也不会重复，除非单个tm每毫秒超过4096
 	xid := common.GenerateXID(request.Addressing, transactionID)
 	gt := model.GlobalTransaction{
 		GlobalSession: &apis.GlobalSession{

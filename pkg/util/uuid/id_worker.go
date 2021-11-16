@@ -26,6 +26,7 @@ const (
 	maxWorkerID = -1 ^ (-1 << workerIDBits)
 
 	// mask that help to extract timestamp and sequence from a long
+	//0x1FFFFFFFFFFFFF
 	timestampAndSequenceMask uint64 = -1 ^ (-1 << (timestampBits + sequenceBits))
 )
 
@@ -48,6 +49,7 @@ func init() {
 	atomic.StoreUint64(&timestampAndSequence, timestampWithSequence)
 }
 
+//通过命令行-n参数指定的serverNode，1-1023，用来设置 workerID ，所以全局的 workerID tc没有用
 func Init(serverNode int64) error {
 	if serverNode > maxWorkerID || serverNode < 0 {
 		return fmt.Errorf("worker id can't be greater than %d or less than 0", maxWorkerID)
@@ -56,6 +58,8 @@ func Init(serverNode int64) error {
 	return nil
 }
 
+//有点类似雪花算法，低12位保存自增值，然后中间41位保存加工过的毫秒时间戳，剩下的高位保存workerID，由serverNode生成。
+//也就是如果每毫秒生成数量超过4096，那么就会导致id重复
 func NextID() int64 {
 	waitIfNecessary()
 	next := atomic.AddUint64(&timestampAndSequence, 1)
@@ -63,6 +67,9 @@ func NextID() int64 {
 	return int64(uint64(workerID) | timestampWithSequence)
 }
 
+//通过原子的方式拿取init()时候保存的一个当前时间毫秒级减去2020-05-03时间戳再左移12位的结果，
+//然后再在这个函数里反向操作后跟当前时间比较，如果当前时间要早于init()时间，则循环等待，
+//这是为了保证这个函数在init()调用后调用？？？init()不是导包的第一个调用的函数吗？？？
 func waitIfNecessary() {
 	currentWithSequence := atomic.LoadUint64(&timestampAndSequence)
 	current := currentWithSequence >> sequenceBits

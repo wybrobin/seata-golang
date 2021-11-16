@@ -44,9 +44,9 @@ func GetTransactionManager() *TransactionManager {
 
 func (manager *TransactionManager) Begin(ctx context.Context, name string, timeout int32) (string, error) {
 	request := &apis.GlobalBeginRequest{
-		Addressing:      manager.addressing,
+		Addressing:      manager.addressing,	//sample里的tm配置文件里写的是 aggregationSvc
 		Timeout:         timeout,
-		TransactionName: name,
+		TransactionName: name,	//sample里的tm写的值是 CreateSo
 	}
 	resp, err := manager.rpcClient.Begin(ctx, request)
 	if err != nil {
