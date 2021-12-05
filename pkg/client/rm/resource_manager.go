@@ -72,6 +72,7 @@ func GetResourceManager() *ResourceManager {
 	return defaultResourceManager
 }
 
+//这个跑在单独的gorouting里
 func (manager *ResourceManager) branchCommunicate() {
 	for {
 		ctx := metadata.AppendToOutgoingContext(context.Background(), "addressing", manager.addressing)
@@ -82,6 +83,7 @@ func (manager *ResourceManager) branchCommunicate() {
 		}
 
 		done := make(chan bool)
+		//又起了一个gorouting
 		runtime.GoWithRecover(func() {
 			for {
 				select {
@@ -90,7 +92,7 @@ func (manager *ResourceManager) branchCommunicate() {
 						return
 					}
 				case msg := <-manager.branchMessages:
-					err := stream.Send(msg)
+					err := stream.Send(msg)	//不停地收来自 branchMessages 管道的消息，通过pb协议 BranchCommunicate 的stream发送给tc
 					if err != nil {
 						return
 					}
@@ -99,9 +101,9 @@ func (manager *ResourceManager) branchCommunicate() {
 		}, nil)
 
 		for {
-			msg, err := stream.Recv()
-			if err == io.EOF {
-				close(done)
+			msg, err := stream.Recv()	//接收来自tc通过协议 BranchCommunicate 的stream来的消息
+			if err == io.EOF {	//服务端返回 BranchCommunicate 函数了
+				close(done)	//让发送消息的gorouting退出
 				break
 			}
 			if err != nil {
@@ -109,10 +111,10 @@ func (manager *ResourceManager) branchCommunicate() {
 				break
 			}
 			switch msg.BranchMessageType {
-			case apis.TypeBranchCommit:
+			case apis.TypeBranchCommit:	//这个就是tc让rm commit
 				request := &apis.BranchCommitRequest{}
 				data := msg.GetMessage().GetValue()
-				err := request.Unmarshal(data)
+				err := request.Unmarshal(data)	//解码 google.protobuf.Any 的二进制数据为 BranchCommitRequest 结构，所以发送的时候也应该用 BranchCommitRequest 结构编码
 				if err != nil {
 					log.Error(err)
 					continue
@@ -224,9 +226,9 @@ func (manager *ResourceManager) LockQuery(ctx context.Context, xid string, resou
 }
 
 func (manager ResourceManager) BranchCommit(ctx context.Context, request *apis.BranchCommitRequest) (*apis.BranchCommitResponse, error) {
-	rm, ok := manager.managers[request.BranchType]
+	rm, ok := manager.managers[request.BranchType]	//BranchType 就是 AT TCC SAGA XA
 	if ok {
-		return rm.BranchCommit(ctx, request)
+		return rm.BranchCommit(ctx, request)	//如果是AT，跳转的时候要用sample代码，因为AT写在opentrx的mysql库里，这里看只有TCC的。AT就是删除undo_log表的对应数据
 	}
 	return &apis.BranchCommitResponse{
 		ResultCode: apis.ResultCodeFailed,
@@ -237,7 +239,7 @@ func (manager ResourceManager) BranchCommit(ctx context.Context, request *apis.B
 func (manager *ResourceManager) BranchRollback(ctx context.Context, request *apis.BranchRollbackRequest) (*apis.BranchRollbackResponse, error) {
 	rm, ok := manager.managers[request.BranchType]
 	if ok {
-		return rm.BranchRollback(ctx, request)
+		return rm.BranchRollback(ctx, request)	//和 BranchCommit 一样，要到mysql库里看
 	}
 	return &apis.BranchRollbackResponse{
 		ResultCode: apis.ResultCodeFailed,

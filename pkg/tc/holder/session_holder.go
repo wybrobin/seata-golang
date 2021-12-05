@@ -132,6 +132,7 @@ func (holder *SessionHolder) UpdateGlobalSessionStatus(session *apis.GlobalSessi
 	return holder.manager.UpdateGlobalSessionStatus(session, status)
 }
 
+//将global_table的这个xid的active设置为0
 func (holder *SessionHolder) InactiveGlobalSession(session *apis.GlobalSession) error {
 	session.Active = false
 	return holder.manager.InactiveGlobalSession(session)
@@ -156,6 +157,7 @@ func (holder *SessionHolder) RemoveGlobalTransaction(globalTransaction *model.Gl
 	return nil
 }
 
+//插入 branch_table 表
 func (holder *SessionHolder) AddBranchSession(globalSession *apis.GlobalSession, session *apis.BranchSession) error {
 	return holder.manager.AddBranchSession(globalSession, session)
 }

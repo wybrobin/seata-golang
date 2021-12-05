@@ -81,6 +81,7 @@ func (gtx *DefaultGlobalTransaction) BeginWithTimeoutAndName(timeout int32, name
 		return nil
 	}
 	//Participant参与者不应该开启事务，因为Participant参与者的XID才不为空
+	//这里直接不是 Launcher 就应该报错返回了，上面不是 Launcher ，然后XID空报错，不空到这里也报错
 	if gtx.XID != "" {
 		return errors.New("xid should be empty")
 	}

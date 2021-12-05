@@ -108,7 +108,7 @@ message GlobalSession {
         // Retrying rollback (since timeout) after a recoverable failure.
         TimeoutRollbackRetrying = 7;
 
-        // All branches can be async committed. The committing is NOT done yet, but it can be seen as 
+        // All branches can be async committed. The committing is NOT done yet, but it can be seen as
         // committed for TM/RM rpc_client.
         AsyncCommitting = 8;
 
@@ -227,14 +227,14 @@ message RowLock {
     string RowKey = 7 [(gogoproto.moretags) = "xorm:\"row_key\""];
 }
 
-// GlobalBeginRequest represents a global transaction begin 
+// GlobalBeginRequest represents a global transaction begin
 message GlobalBeginRequest {
     string Addressing = 1;
     int32 Timeout = 2;
     string TransactionName = 3;
 }
 
-// GlobalBeginResponse represents a response to GlobalBeginRequest 
+// GlobalBeginResponse represents a response to GlobalBeginRequest
 message GlobalBeginResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -242,7 +242,7 @@ message GlobalBeginResponse {
     string XID = 4;
 }
 
-// BranchRegisterRequest represents a branch transaction join in the global transaction 
+// BranchRegisterRequest represents a branch transaction join in the global transaction
 message BranchRegisterRequest {
     string Addressing = 1;
     string XID = 2;
@@ -252,7 +252,7 @@ message BranchRegisterRequest {
     bytes ApplicationData = 6;
 }
 
-// BranchRegisterResponse represents a response to BranchRegisterRequest 
+// BranchRegisterResponse represents a response to BranchRegisterRequest
 message BranchRegisterResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -260,7 +260,7 @@ message BranchRegisterResponse {
     int64 BranchID = 4;
 }
 
-// BranchReportRequest represents a request to report branch transaction execution status 
+// BranchReportRequest represents a request to report branch transaction execution status
 message BranchReportRequest {
     string XID = 1;
     int64 BranchID = 2;
@@ -270,7 +270,7 @@ message BranchReportRequest {
     bytes ApplicationData = 6;
 }
 
-// BranchReportResponse represents a response to BranchReportRequest 
+// BranchReportResponse represents a response to BranchReportRequest
 message BranchReportResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -293,12 +293,12 @@ message GlobalLockQueryResponse {
     bool Lockable = 4;
 }
 
-// GlobalStatusRequest represents a request to query the global transaction status 
+// GlobalStatusRequest represents a request to query the global transaction status
 message GlobalStatusRequest {
     string XID = 1;
 }
 
-// GlobalStatusResponse represents a response to GlobalStatusRequest 
+// GlobalStatusResponse represents a response to GlobalStatusRequest
 message GlobalStatusResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -306,12 +306,12 @@ message GlobalStatusResponse {
     GlobalSession.GlobalStatus GlobalStatus = 4;
 }
 
-// GlobalCommitRequest represents a request to commit global transaction 
+// GlobalCommitRequest represents a request to commit global transaction
 message GlobalCommitRequest {
     string XID = 1;
 }
 
-// GlobalCommitResponse represents a response to GlobalCommitRequest 
+// GlobalCommitResponse represents a response to GlobalCommitRequest
 message GlobalCommitResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -319,12 +319,12 @@ message GlobalCommitResponse {
     GlobalSession.GlobalStatus GlobalStatus = 4;
 }
 
-// GlobalRollbackRequest represents a request to rollback global transaction 
+// GlobalRollbackRequest represents a request to rollback global transaction
 message GlobalRollbackRequest {
     string XID = 1;
 }
 
-// GlobalRollbackResponse represents a response to GlobalRollbackRequest 
+// GlobalRollbackResponse represents a response to GlobalRollbackRequest
 message GlobalRollbackResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -332,13 +332,13 @@ message GlobalRollbackResponse {
     GlobalSession.GlobalStatus GlobalStatus = 4;
 }
 
-// GlobalReportRequest represents a request to report global transaction execution status 
+// GlobalReportRequest represents a request to report global transaction execution status
 message GlobalReportRequest {
     string XID = 1;
     GlobalSession.GlobalStatus GlobalStatus = 2;
 }
 
-// GlobalReportResponse represents a response to GlobalReportRequest 
+// GlobalReportResponse represents a response to GlobalReportRequest
 message GlobalReportResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -346,7 +346,7 @@ message GlobalReportResponse {
     GlobalSession.GlobalStatus GlobalStatus = 4;
 }
 
-// BranchCommitRequest represents a request to commit branch transaction 
+// BranchCommitRequest represents a request to commit branch transaction
 message BranchCommitRequest {
     string XID = 1;
     int64 BranchID = 2;
@@ -356,7 +356,7 @@ message BranchCommitRequest {
     bytes ApplicationData = 6;
 }
 
-// BranchCommitResponse represents a response to BranchCommitRequest 
+// BranchCommitResponse represents a response to BranchCommitRequest
 message BranchCommitResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -366,7 +366,7 @@ message BranchCommitResponse {
     BranchSession.BranchStatus BranchStatus = 6;
 }
 
-// BranchCommitRequest represents a request to rollback branch transaction 
+// BranchCommitRequest represents a request to rollback branch transaction
 message BranchRollbackRequest {
     string XID = 1;
     int64 BranchID = 2;
@@ -376,7 +376,7 @@ message BranchRollbackRequest {
     bytes ApplicationData = 6;
 }
 
-// BranchRollbackResponse represents a response to BranchRollbackRequest 
+// BranchRollbackResponse represents a response to BranchRollbackRequest
 message BranchRollbackResponse {
     ResultCode ResultCode = 1;
     ExceptionCode ExceptionCode = 2;
@@ -393,17 +393,29 @@ message BranchMessage {
 }
 
 service TransactionManagerService {
+	//TM从TC获取一个XID
     rpc Begin(GlobalBeginRequest) returns (GlobalBeginResponse);
+	//查询global_table里某个xid的数据，但是这里TM并没有用到
     rpc GetStatus(GlobalStatusRequest) returns (GlobalStatusResponse);
+	//没有实现
     rpc GlobalReport(GlobalReportRequest) returns (GlobalReportResponse);
+	//TM通知TC去commit某个XID
     rpc Commit(GlobalCommitRequest) returns (GlobalCommitResponse);
+	//TM通知TC去rollback某个XID
     rpc Rollback(GlobalRollbackRequest) returns (GlobalRollbackResponse);
 }
 
 service ResourceManagerService {
+	//两个stream，RM和TC之间实时的通信，包括TC向RM发送 branchCommit 和 branchRollback ，然后RM向TC响应这两个请求的结果
+	//因为这是一个由TC向RM主动发送请求的过程，也就是服务端主动，所以要建立长连接
+	//在mysql项目里，RM收到TC请求后，执行 BranchCommit 和 BranchRollback
     rpc BranchCommunicate(stream BranchMessage) returns (stream BranchMessage);
+	//创建一个branchid，锁住rowKey，插表lock_table和branch_table，在RM commit 前 和 rollback 后发送
     rpc BranchRegister(BranchRegisterRequest) returns (BranchRegisterResponse);
+	//向TC通知branch的状态，会通知两种状态：PhaseOneDone、PhaseOneFailed，AT只会发送PhaseOneFailed，在一阶段写入undo_log失败或commit失败时和在一阶段rollback时
     rpc BranchReport(BranchReportRequest) returns (BranchReportResponse);
+	//查看以{tableName}:{pk1},{pk2},{pk3}...;{tableName}:{pk1},{pk2},{pk3}...;{tableName}:{pk1},{pk2},{pk3}...;...
+	//字符串格式里的pk的值是否已经被其他XID锁住，这个是在用select for update的时候，AT要锁住某行
     rpc LockQuery(GlobalLockQueryRequest) returns (GlobalLockQueryResponse);
 }
 

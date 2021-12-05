@@ -49,9 +49,11 @@ type TransactionCoordinator struct {
 	locker             GlobalSessionLocker
 
 	idGenerator        *atomic.Uint64
-	futures            *sync.Map
+	futures            *sync.Map	//这个是当tc要已经通过 callBackMessages 里的value存的chan给RM发送消息后，RM的响应都会去检查 futures 里的数据，塞的数据是 MessageFuture 里面有个 chan Done，
+									// tc的 branchCommit 或 branchRollback 会等待这个Done来信号，而RM给TC回消息后，就会向这个Done发送一个true。如果超时等不到， branchCommit 或 branchRollback 会报错。
 	activeApplications *sync.Map
-	callBackMessages   *sync.Map
+	callBackMessages   *sync.Map	//这个放入的value，是发送给RM的 BranchCommunicate 的数据，当TM需要commit或rollback时，是往这个value里存的chan塞数据，
+									// 然后 BranchCommunicate 的服务函数会起个gorouting从chan里取数据，然后stream.Send(msg)
 }
 
 func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinator {
@@ -82,11 +84,15 @@ func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinat
 		activeApplications: &sync.Map{},
 		callBackMessages:   &sync.Map{},
 	}
-	//每秒检查一次超时的，放到管道event.EventBus.GlobalTransactionEventChannel里
+	//每秒检查一次状态为 apis.Begin 而且超时的，放到管道event.EventBus.GlobalTransactionEventChannel里，然后把状态改为TimeoutRollingBack
+	//这样就会交给 go tc.processRetryRollingBack() 处理，然后由这个gorouting进行回滚
+	//在metrics，看样子是暴露给promethues一个http接口，用于监控，统计处理了多少个事务
 	go tc.processTimeoutCheck()
 	//找到global_table表里status是AsyncCommitting的数据，对它们branch进行分析，然后判断是否commit
+	//用来处理那些不是TCC，标记为 AsyncCommitting 的数据，在这里异步的commit
 	go tc.processAsyncCommitting()
 	//处理status为CommitRetrying的global_table和branch_table数据，对它们branch进行分析，然后判断是否将状态改为commit
+	//当commit失败时，就由这个gorouting来重试
 	go tc.processRetryCommitting()
 	//处理status为RollingBack、RollbackRetrying、TimeoutRollingBack、TimeoutRollbackRetrying的global_table和branch_table数据，对它们branch进行分析，然后判断是否将状态改为rollback
 	go tc.processRetryRollingBack()
@@ -97,19 +103,19 @@ func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinat
 //tc收到tm的获取xid的请求
 func (tc *TransactionCoordinator) Begin(ctx context.Context, request *apis.GlobalBeginRequest) (*apis.GlobalBeginResponse, error) {
 	transactionID := uuid.NextID()
-	//xid格式：addressing:tranID，这样就是具有不通addressing名字的，也就是不同的tm，但用相同的tc，他们加起来超过每毫秒4096也不会重复，除非单个tm每毫秒超过4096
+	//xid格式：addressing:tranID，这样就是具有不同addressing名字的，也就是不同的tm，但用相同的tc，他们加起来超过每毫秒4096也不会重复，除非单个tm每毫秒超过4096
 	xid := common.GenerateXID(request.Addressing, transactionID)
 	gt := model.GlobalTransaction{
 		GlobalSession: &apis.GlobalSession{
-			Addressing:      request.Addressing,
+			Addressing:      request.Addressing,	//sample里就是config.yml里配的addressing：aggregationSvc
 			XID:             xid,
-			TransactionID:   transactionID,
-			TransactionName: request.TransactionName,
-			Timeout:         request.Timeout,
+			TransactionID:   transactionID,	//其实这里transactionID可以从xid里知道，就是:后面的
+			TransactionName: request.TransactionName,	//sample里就是CreateSo，也就是TransactionInfo.Name
+			Timeout:         request.Timeout,	//TransactionInfo.TimeOut，也是tm传的
 		},
 	}
-	gt.Begin()
-	err := tc.holder.AddGlobalSession(gt.GlobalSession)
+	gt.Begin()	//初始化gt里的状态值，其实这里的proto文件，不仅生成了grpc的协议，还生成了xorm，也就是数据库对象的类型
+	err := tc.holder.AddGlobalSession(gt.GlobalSession)	//插表global_table
 	if err != nil {
 		return &apis.GlobalBeginResponse{
 			ResultCode:    apis.ResultCodeFailed,
@@ -118,7 +124,7 @@ func (tc *TransactionCoordinator) Begin(ctx context.Context, request *apis.Globa
 		}, nil
 	}
 
-	runtime.GoWithRecover(func() {
+	runtime.GoWithRecover(func() {	//发送给一个StandardCounter去记数+1，在metrics，看样子是暴露给promethues一个http接口，用于监控，统计处理了多少个事务
 		evt := event.NewGlobalTransactionEvent(gt.TransactionID, event.RoleTC, gt.TransactionName, gt.BeginTime, 0, gt.Status)
 		event.EventBus.GlobalTransactionEventChannel <- evt
 	}, nil)
@@ -148,6 +154,7 @@ func (tc *TransactionCoordinator) GlobalReport(ctx context.Context, request *api
 	return nil, status.Errorf(codes.Unimplemented, "method GlobalReport not implemented")
 }
 
+//请求参数只有一个XID
 func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.GlobalCommitRequest) (*apis.GlobalCommitResponse, error) {
 	gt := tc.holder.FindGlobalTransaction(request.XID)
 	if gt == nil {
@@ -157,22 +164,26 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 		}, nil
 	}
 	shouldCommit, err := func(gt *model.GlobalTransaction) (bool, error) {
+		//没用，必定返回true
 		result, err := tc.locker.TryLock(gt.GlobalSession, time.Duration(gt.Timeout)*time.Millisecond)
 		if err != nil {
 			return false, err
 		}
-		if result {
+		if result {	//必定进来
 			defer tc.locker.Unlock(gt.GlobalSession)
 			if gt.Active {
 				// Active need persistence
 				// Highlight: Firstly, close the session, then no more branch can be registered.
+				//将global_table的这个xid的active设置为0
 				err = tc.holder.InactiveGlobalSession(gt.GlobalSession)
 				if err != nil {
 					return false, err
 				}
 			}
+			//删除lock_table相关记录
 			tc.resourceDataLocker.ReleaseGlobalSessionLock(gt)
 			if gt.Status == apis.Begin {
+				//更新global_table表对应xid的status为Committing
 				err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.Committing)
 				if err != nil {
 					return false, err
@@ -193,7 +204,7 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 		}, nil
 	}
 
-	if !shouldCommit {
+	if !shouldCommit {	//gt.Status 进来的时候不是Begin
 		if gt.Status == apis.AsyncCommitting {
 			return &apis.GlobalCommitResponse{
 				ResultCode:   apis.ResultCodeSuccess,
@@ -206,7 +217,9 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 		}, nil
 	}
 
-	if gt.CanBeCommittedAsync() {
+	if gt.CanBeCommittedAsync() {//奇怪，为什么不是TCC的就直接变成状态AsyncCommitting了？？？不应该继续执行吗？比如AT。难道不是TCC就是异步提交？TCC就相当于到这一步必须要成功？
+		//TC在 NewTransactionCoordinator 的时候，有 go tc.processAsyncCommitting()，这里就是用来处理这些状态为 apis.AsyncCommitting 的，
+		//会在gorouting里扫描状态为 apis.AsyncCommitting 的，然后调用 tc.doGlobalCommit(transaction, true)
 		err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.AsyncCommitting)
 		if err != nil {
 			return nil, err
@@ -217,6 +230,7 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 		}, nil
 	}
 
+	//TCC必须同步commit，为什么呢？？？
 	_, err = tc.doGlobalCommit(gt, false)
 	if err != nil {
 		return &apis.GlobalCommitResponse{
@@ -233,6 +247,8 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 }
 
 //检查GlobalTransaction里所有branch的状态，决定是否commit，然后删除对应的表数据
+//retrying 参数表示当前 doGlobalCommit 是否在 go tc.processAsyncCommitting() 或 go tc.processRetryCommitting() 里调用，
+//如果是，那就不用再标记为 apis.CommitRetrying 了，如果不是，要标记状态为 apis.CommitRetrying ，这样可以让上面两个gorouting去重试
 func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, retrying bool) (bool, error) {
 	var err error
 
@@ -272,6 +288,7 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 		}
 		switch branchStatus {
 		case apis.PhaseTwoCommitted:
+			//如果RM成功删除了undo_log，就会将这个状态返回
 			//删除bs对应的branch_table的一条记录下对应所有lock_table表记录
 			tc.resourceDataLocker.ReleaseLock(bs)
 			delete(gt.BranchSessions, bs)
@@ -342,7 +359,9 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 
 	//删除gt的lock_table相关所有内容
 	tc.resourceDataLocker.ReleaseGlobalSessionLock(gt)
-	//删除gt的global_table和branch_table相关所有内容
+	//删除gt的global_table和branch_table相关所有内容，
+	//这里可能存在 PhaseTwoCommitFailedCanNotRetry且不是TCC 这种，所以还要再删一次branch_table相关所有内容
+	//像 PhaseOneFailed 或 PhaseTwoCommitted 在上面已经删了branch_table相关内容
 	err = tc.holder.RemoveGlobalTransaction(gt)
 	if err != nil {
 		return false, err
@@ -385,6 +404,7 @@ func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.Bra
 	q := queue.(chan *apis.BranchMessage)
 	//往q这个chan里放入message，如果塞不进去，就返回
 	//如果是新创建的chan，应该是塞不进去的，直接就default了，只有之前有的，有其他gorouting监听了，才能塞进去
+	//这个应该在RM连接的时候就调用了 BranchCommunicate ，所以那边的gorouting已经启动了
 	select {
 	case q <- message:
 	default:
@@ -392,7 +412,9 @@ func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.Bra
 	}
 
 	resp := common2.NewMessageFuture(message)
-	//存储到tc.futures这个sync.map里，应该是有其他的gorouting去扫描这个tc.futures，去定时消耗里面的内容，然后把resp.Done给关掉
+	//存储到tc.futures这个sync.map里，应该是 BranchCommunicate 的gorouting收到来自RM的响应后，去查找对应message.ID的内容，然后把 resp.Done 发送一个true
+	//这里有个时间差，如果RM那边响应很快，而这边卡了一下，就会导致RM那边响应已经回来了，这个futures.Store还没写进去，就会导致 BranchCommunicate 那边收到 RM响应后，
+	//在futures里找不到对应的key，然后跳过，这边又再写进去，不就会导致后面的30s超时吗？？？这个tc.futures.Store放到case q <- message:前面是不是更好？？？
 	tc.futures.Store(message.ID, resp)
 
 	//30s后从tc.futures中删除这个本地原子自增的ID，然后报超时错误
@@ -413,6 +435,7 @@ func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.Bra
 		return bs.Status, fmt.Errorf("response type not right")
 	}
 	if response.ResultCode == apis.ResultCodeSuccess {
+		//当RM响应成功后，会将状态返回
 		return response.BranchStatus, nil
 	}
 	return bs.Status, fmt.Errorf(response.Message)
@@ -431,7 +454,7 @@ func (tc *TransactionCoordinator) Rollback(ctx context.Context, request *apis.Gl
 		if err != nil {
 			return false, err
 		}
-		if result {
+		if result {	//必定进这里
 			defer tc.locker.Unlock(gt.GlobalSession)
 			if gt.Active {
 				// Active need persistence
@@ -462,12 +485,14 @@ func (tc *TransactionCoordinator) Rollback(ctx context.Context, request *apis.Gl
 		}, nil
 	}
 
-	if !shouldRollBack {
+	if !shouldRollBack {	//gt.Status 进来的时候不是Begin
 		return &apis.GlobalRollbackResponse{
 			ResultCode:   apis.ResultCodeSuccess,
 			GlobalStatus: gt.Status,
 		}, nil
 	}
+
+	//回滚的时候就没有判断 gt.CanBeCommittedAsync() 了
 
 	_, err = tc.doGlobalRollback(gt, false)
 	if err != nil {
@@ -667,6 +692,7 @@ func (tc *TransactionCoordinator) BranchCommunicate(stream apis.ResourceManagerS
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		addressing = md.Get("addressing")[0]
+		//activeApplications 记录每个 addressing 连接上来的个数，这个addressing就是sample里配的orderSvc或productSvc
 		c, ok := tc.activeApplications.Load(addressing)
 		if ok {
 			count := c.(int)
@@ -681,9 +707,11 @@ func (tc *TransactionCoordinator) BranchCommunicate(stream apis.ResourceManagerS
 		}()
 	}
 
+	//这个chan是 branchCommit 或 branchRollback 时，往这里塞数据，让这边取出后通过 BranchCommunicate 的stream发给RM的
 	queue, _ := tc.callBackMessages.LoadOrStore(addressing, make(chan *apis.BranchMessage))
 	q := queue.(chan *apis.BranchMessage)
 
+	//启动gorouting，接收来自chan callBackMessages[addressing] 的 BranchMessage 数据，然后发给调用了 BranchCommunicate 协议连接上来的rm
 	runtime.GoWithRecover(func() {
 		for {
 			select {
@@ -716,6 +744,7 @@ func (tc *TransactionCoordinator) BranchCommunicate(stream apis.ResourceManagerS
 				return err
 			}
 			switch branchMessage.GetBranchMessageType() {
+			//不管收到啥，都删 tc.futures 对应的ID，如果rm回滚失败，则不返回
 			case apis.TypeBranchCommitResult:
 				response := &apis.BranchCommitResponse{}
 				data := branchMessage.GetMessage().GetValue()
@@ -763,14 +792,14 @@ func (tc *TransactionCoordinator) BranchRegister(ctx context.Context, request *a
 	}
 
 	result, err := tc.locker.TryLock(gt.GlobalSession, time.Duration(gt.Timeout)*time.Millisecond)
-	if err != nil {
+	if err != nil {	//不会进这里
 		return &apis.BranchRegisterResponse{
 			ResultCode:    apis.ResultCodeFailed,
 			ExceptionCode: apis.FailedLockGlobalTransaction,
 			Message:       fmt.Sprintf("could not found global transaction xid = %s", request.XID),
 		}, nil
 	}
-	if result {
+	if result {	//必定进这里
 		defer tc.locker.Unlock(gt.GlobalSession)
 		if !gt.Active {
 			return &apis.BranchRegisterResponse{
@@ -801,6 +830,7 @@ func (tc *TransactionCoordinator) BranchRegister(ctx context.Context, request *a
 		}
 
 		if bs.Type == apis.AT {
+			//将请求的 LockKey 拆分为 RowLock 后，从数据库里判断是否被其他XID占用，如果有被其他XID占用的，就不能锁成功，否则将自己的XID和这些锁写入数据库中，之前已经有的当前XID的锁保持不变
 			result := tc.resourceDataLocker.AcquireLock(bs)
 			if !result {
 				return &apis.BranchRegisterResponse{
@@ -812,6 +842,7 @@ func (tc *TransactionCoordinator) BranchRegister(ctx context.Context, request *a
 			}
 		}
 
+		//插入 branch_table 表，在mysql中 gt.GlobalSession 参数无用
 		err := tc.holder.AddBranchSession(gt.GlobalSession, bs)
 		if err != nil {
 			log.Error(err)
@@ -855,6 +886,7 @@ func (tc *TransactionCoordinator) BranchReport(ctx context.Context, request *api
 		}, nil
 	}
 
+	//修改 branch_table 的 status 字段
 	err := tc.holder.UpdateBranchSessionStatus(bs, request.BranchStatus)
 	if err != nil {
 		return &apis.BranchReportResponse{

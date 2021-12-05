@@ -98,6 +98,7 @@ func FromParameters(parameters map[string]interface{}) (storage.Driver, error) {
 
 	lockTable := parameters["locktable"]
 	if globalTable == nil {
+		//？？？bug
 		dsn = "global_table"
 	}
 
@@ -294,6 +295,8 @@ func (driver *driver) RemoveGlobalSession(session *apis.GlobalSession) error {
 
 // Add branch session.
 func (driver *driver) AddBranchSession(globalSession *apis.GlobalSession, session *apis.BranchSession) error {
+	//insert into branch_table (addressing, xid, branch_id, transaction_id, resource_id, lock_key, branch_type,
+	//        status, application_data, gmt_create, gmt_modified) values(?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now())
 	_, err := driver.engine.Exec(fmt.Sprintf(InsertBranchTransaction, driver.branchTable),
 		session.Addressing, session.XID, session.BranchID, session.TransactionID, session.ResourceID, session.LockKey,
 		session.Type, session.Status, session.ApplicationData)
@@ -349,15 +352,21 @@ func (driver *driver) RemoveBranchSession(globalSession *apis.GlobalSession, ses
 
 // AcquireLock Acquire lock boolean.
 func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
+	//去重后的 rowLocks，和每个元素的RowKey
 	locks, rowKeys := distinctByKey(rowLocks)
 	var (
 		existedRowLocks []*apis.RowLock
 		rowKeyArgs      []interface{}
 	)
+	//把 rowKeys 又复制到 rowKeyArgs 里，因为后面的driver.engine.SQL的参数里只能支持
+	//但是为什么不在 distinctByKey 里就直接弄成 []interface{} ？？？
 	for _, rowKey := range rowKeys {
 		rowKeyArgs = append(rowKeyArgs, rowKey)
 	}
+	//构造一个sql语句的筛选部分：row_key in (?, ?, ?, ...)
 	whereCond := fmt.Sprintf("row_key in %s", sql.MysqlAppendInParam(len(rowKeys)))
+	//select xid, transaction_id, branch_id, resource_id, table_name, pk, row_key, gmt_create, gmt_modified
+	//		from lock_table where row_key in (?, ?, ?, ...) order by gmt_create asc
 	err := driver.engine.SQL(fmt.Sprintf(QueryRowKey, driver.lockTable, whereCond), rowKeyArgs...).Find(&existedRowLocks)
 	if err != nil {
 		log.Errorf(err.Error())
@@ -365,10 +374,10 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 
 	currentXID := locks[0].XID
 	canLock := true
-	existedRowKeys := make([]string, 0)
-	unrepeatedLocks := make([]*apis.RowLock, 0)
+	existedRowKeys := make([]string, 0)	//存放从数据库里查出来已经被当前XID锁住的 RowKey
+	unrepeatedLocks := make([]*apis.RowLock, 0)	//存放当前请求要去锁，但是之前不在数据库中的 RowKey
 	for _, rowLock := range existedRowLocks {
-		if rowLock.XID != currentXID {
+		if rowLock.XID != currentXID {//检查当前请求过来的 lockKey 拆分后的 rowKey，从数据库里查出来后，是否已经被其他的XID占用
 			log.Infof("row lock [%s] on %s:%s is holding by xid {%s} branchID {%d}", rowLock.RowKey, driver.lockTable, rowLock.TableName,
 				rowLock.PK, rowLock.XID, rowLock.BranchID)
 			canLock = false
@@ -376,9 +385,11 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 		}
 		existedRowKeys = append(existedRowKeys, rowLock.RowKey)
 	}
+	//如果请求过来的 lockKey 拆分后的 rowKey 在数据库里不存在，或者本来就属于当前请求的XID，那么就可以锁住
 	if !canLock {
 		return false
 	}
+	//从 locks 里挑出不在 existedRowKeys 里的，就是 unrepeatedLocks
 	if len(existedRowKeys) > 0 {
 		for _, lock := range locks {
 			if !contains(existedRowKeys, lock.RowKey) {
@@ -389,6 +400,7 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 		unrepeatedLocks = locks
 	}
 
+	//说明请求的锁已经都在XID名下了，就不用再申请多余的锁了
 	if len(unrepeatedLocks) == 0 {
 		return true
 	}
@@ -398,16 +410,21 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 		args      []interface{}
 		sqlOrArgs []interface{}
 	)
+
+	//构造插入的sql语句
 	for i := 0; i < len(unrepeatedLocks); i++ {
 		sb.WriteString("(?, ?, ?, ?, ?, ?, ?, now(), now()),")
 		args = append(args, unrepeatedLocks[i].XID, unrepeatedLocks[i].TransactionID, unrepeatedLocks[i].BranchID,
 			unrepeatedLocks[i].ResourceID, unrepeatedLocks[i].TableName, unrepeatedLocks[i].PK, unrepeatedLocks[i].RowKey)
 	}
 	values := sb.String()
-	valueStr := values[:len(values)-1]
+	valueStr := values[:len(values)-1]	//去掉最后一个,号
 
+	//insert into lock_table (xid, transaction_id, branch_id, resource_id, table_name, pk, row_key, gmt_create,
+	//		gmt_modified) values (?, ?, ?, ?, ?, ?, ?, now(), now()), (?, ?, ?, ?, ?, ?, ?, now(), now()), ...
 	sqlOrArgs = append(sqlOrArgs, fmt.Sprintf(InsertRowLock, driver.lockTable, valueStr))
 	sqlOrArgs = append(sqlOrArgs, args...)
+	// sqlOrArgs 的第一个值是sql语句字符串，后面是 args
 	_, err = driver.engine.Exec(sqlOrArgs...)
 	if err != nil {
 		// In an extremely high concurrency scenario, the row lock has been written to the database,
@@ -419,6 +436,7 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 	return true
 }
 
+//将入参通过map对 RowKey 进行去重，然后返回去重后的 RowLock list和对应的 RowKey list
 func distinctByKey(locks []*apis.RowLock) ([]*apis.RowLock, []string) {
 	result := make([]*apis.RowLock, 0)
 	rowKeys := make([]string, 0)
@@ -434,6 +452,7 @@ func distinctByKey(locks []*apis.RowLock) ([]*apis.RowLock, []string) {
 	return result, rowKeys
 }
 
+//e是否在s里面存在
 func contains(s []string, e string) bool {
 	for _, a := range s {
 		if a == e {

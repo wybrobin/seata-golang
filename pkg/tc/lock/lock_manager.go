@@ -30,6 +30,7 @@ func (locker *LockManager) AcquireLock(branchSession *apis.BranchSession) bool {
 		return true
 	}
 
+	//查询 locks 是否在数据库中被其他的XID占用，如果有一个被占用，就返回false，否则将这些 locks 标记为当前请求的XID占用
 	return locker.manager.AcquireLock(locks)
 }
 
@@ -62,6 +63,8 @@ func (locker *LockManager) ReleaseGlobalSessionLock(globalTransaction *model.Glo
 	return locker.manager.ReleaseLock(locks)
 }
 
+//查表lock_table，看 lockKey ，这个以格式{tableName}:{pk1},{pk2},{pk3}...;{tableName}:{pk1},{pk2},{pk3}...;{tableName}:{pk1},{pk2},{pk3}...;...
+//组成的字符串里的主键是否被其他XID锁住
 func (locker *LockManager) IsLockable(xid string, resourceID string, lockKey string) bool {
 	return locker.manager.IsLockable(xid, resourceID, lockKey)
 }

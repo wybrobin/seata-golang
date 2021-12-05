@@ -10,8 +10,8 @@ SET FOREIGN_KEY_CHECKS = 0;
 CREATE TABLE IF NOT EXISTS `global_table`
 (
   `addressing` varchar(128) NOT NULL,
-  `xid` varchar(128) NOT NULL,
-  `transaction_id` bigint DEFAULT NULL,
+  `xid` varchar(128) NOT NULL,	--格式：{addressing}:{transaction_id}，addressing就是sample里tm和rm配置里的名字
+  `transaction_id` bigint DEFAULT NULL,	--低12位保存自增值，然后中间41位保存加工过的毫秒时间戳，剩下的高位保存workerID，是TC启动的命令行参数serverNode值
   `transaction_name` varchar(128) DEFAULT NULL,
   `timeout` int DEFAULT NULL,
   `begin_time` bigint DEFAULT NULL,
@@ -32,9 +32,9 @@ CREATE TABLE IF NOT EXISTS `branch_table`
 (
   `addressing` varchar(128) NOT NULL,
   `xid` varchar(128) NOT NULL,
-  `branch_id` bigint NOT NULL,
+  `branch_id` bigint NOT NULL,	--与transaction_id生成方式一样
   `transaction_id` bigint DEFAULT NULL,
-  `resource_id` varchar(256) DEFAULT NULL,
+  `resource_id` varchar(256) DEFAULT NULL,	--就是DBName
   `lock_key` VARCHAR(1000),	--用;隔开的。每个:前代表tableName，后代表mergedPKs。mergedPKs又是用,隔开每个pk
   `branch_type` varchar(8) DEFAULT NULL, -- 0at，1tcc，2saga,3xa
   `status` tinyint DEFAULT NULL,

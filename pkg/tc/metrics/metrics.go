@@ -123,7 +123,7 @@ func sortedLabels(labels map[string]string) (keys, values []string) {
 
 var (
 	CounterActive = &Counter{
-		Counter: metrics.NewCounter(),
+		Counter: metrics.NewCounter(),	//赋值为 StandardCounter
 		Name:    SeataTransaction,
 		Labels: map[string]string{
 			RoleKey:   RoleValueTc,

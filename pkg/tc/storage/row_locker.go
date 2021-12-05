@@ -22,6 +22,10 @@ func CollectRowLocks(lockKey string, resourceID string, xid string) []*apis.RowL
 }
 
 //将branch_table表的lock_key字段通过;:,拆开，存到RowLock（对应表lock_table），组成切片返回
+//为什么不用xid关联，要用这么麻烦的组合呢？？？为了少查一个lock_table表？就是只记录在branch_table就可以了，也不用了，直接对lock_table用xid筛选就完了啊？？？
+//这个函数的lockKey参数不一定是branch_table表传过来的lock_key字段，这个函数只是将参数lockKey拆成TableName和pk
+//从这个函数来看，lockKey的格式是：{tableName}:{pk1},{pk2},{pk3}...;{tableName}:{pk1},{pk2},{pk3}...;{tableName}:{pk1},{pk2},{pk3}...;...
+//一个pk就是一个RowLock
 func collectRowLocks(lockKey string,
 	resourceID string,
 	xid string,
