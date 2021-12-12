@@ -37,10 +37,14 @@ type ServiceDescriptor struct {
 
 // Register
 //sample里传进来的就是Svc的对象指针和它与包裹它的ProxyService的函数变量一样的函数名CreateSo
+//TCC传进来的是ServiceA 的对象，实现了 TccProxyService interface的Try、Confirm、Cancel方法
+//这里就是把这个服务的反射数据都放到以服务名为key的 serviceDescriptorMap 变量里，包括服务名、对象指针的TypeOf和ValueOf，还有所有方法的context参数和其他入参，还有出参
+//最后返回 MethodDescriptor 类型，这个也存在了 serviceDescriptorMap 对应服务里的 Methods 里
 func Register(service interface{}, methodName string) *MethodDescriptor {
-	serviceType := reflect.TypeOf(service)	//*Svc
+	serviceType := reflect.TypeOf(service)	//*Svc，TCC是 *ServiceA
 	serviceValue := reflect.ValueOf(service)	//这个value是个指针
 	svcName := reflect.Indirect(serviceValue).Type().Name()	//Indirect就是如果是指针，则返回.Elem()，如果不是指针，则直接返回值，所以这里拿到的是Svc
+	//TCC 就是 ServiceA
 
 	//全局变量，以struct的名字为key，ServiceDescriptor指针为value的map，存在则直接取，不存在则新建。
 	//ServiceDescriptor保存了这个struct的名字（Name），指针TypeOf（ReflectType）和指针valueOf（ReflectValue），还有一个空的sync.Map（Methods）

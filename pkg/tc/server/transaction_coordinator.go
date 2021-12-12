@@ -249,6 +249,8 @@ func (tc *TransactionCoordinator) Commit(ctx context.Context, request *apis.Glob
 //检查GlobalTransaction里所有branch的状态，决定是否commit，然后删除对应的表数据
 //retrying 参数表示当前 doGlobalCommit 是否在 go tc.processAsyncCommitting() 或 go tc.processRetryCommitting() 里调用，
 //如果是，那就不用再标记为 apis.CommitRetrying 了，如果不是，要标记状态为 apis.CommitRetrying ，这样可以让上面两个gorouting去重试
+//这个 retrying 只要是同步调用，就是rpc的 Commit，就是false，如果是gorouting重试就是true，retrying 就是用来判断是第一次commit还是重试commit
+//如果是重试commit，就不用修改状态了，所以 retrying 是true
 func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, retrying bool) (bool, error) {
 	var err error
 
@@ -274,6 +276,7 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 			}
 			continue
 		}
+		//通过RM，让RM commit，然后等待RM的响应，通过 BranchCommunicate 这个stream进行通信
 		branchStatus, err1 := tc.branchCommit(bs)
 		if err1 != nil {
 			log.Errorf("exception committing branch xid=%d branchID=%d, err: %v", bs.GetXID(), bs.BranchID, err1)
@@ -321,7 +324,8 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 			}
 		default:
 			{
-				if !retrying {
+				if !retrying {	//TCC的如果失败就会进这里，RM返回的状态是 apis.PhaseTwoCommitFailedRetryable
+					//然后就会被 processRetryCommitting 进行重试
 					err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.CommitRetrying)
 					if err != nil {
 						return false, err
@@ -376,7 +380,8 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 	return true, err
 }
 
-//将bs序列化后，给个自增的ID，塞到tc.callBackMessages里的chan里。再将自增ID存到tc.futures里，等待30s等其他gorouting处理
+//将bs序列化后，给个自增的ID，塞到tc.callBackMessages里的chan里。
+//再将自增ID存到tc.futures里，等待30s等 BranchCommunicate 里面与RM通信，将RM的返回信息再放到tc.futures里
 func (tc *TransactionCoordinator) branchCommit(bs *apis.BranchSession) (apis.BranchSession_BranchStatus, error) {
 	request := &apis.BranchCommitRequest{
 		XID:             bs.XID,
@@ -576,13 +581,13 @@ func (tc *TransactionCoordinator) doGlobalRollback(gt *model.GlobalTransaction, 
 			return false, nil
 		default:
 			log.Infof("failed to rollback branch xid=%d branchID=%d", gt.XID, bs.BranchID)
-			if !retrying {
+			if !retrying {	//TCC RM rollback 失败，status是 PhaseTwoRollbackFailedRetryable
 				if gt.IsTimeoutGlobalStatus() {
 					err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.TimeoutRollbackRetrying)
 					if err != nil {
 						return false, err
 					}
-				} else {
+				} else {	//所以TCC rollback 失败到这里，然后交给 handleRetryRollingBack 去重试
 					err = tc.holder.UpdateGlobalSessionStatus(gt.GlobalSession, apis.RollbackRetrying)
 					if err != nil {
 						return false, err
@@ -1035,7 +1040,7 @@ func (tc *TransactionCoordinator) handleRetryCommitting() {
 	if len(addressingIdentities) == 0 {
 		return
 	}
-	//找到status为CommitRetrying的global_table和branch_table数据，组成的GlobalTransaction切片
+	//找到status为 CommitRetrying 的global_table和branch_table数据，组成的GlobalTransaction切片
 	committingTransactions := tc.holder.FindRetryCommittingGlobalTransactions(addressingIdentities)
 	if len(committingTransactions) == 0 {
 		return

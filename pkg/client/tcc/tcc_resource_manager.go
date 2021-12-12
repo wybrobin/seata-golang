@@ -31,7 +31,9 @@ func GetTCCResourceManager() TCCResourceManager {
 	return tccResourceManager
 }
 
+//从 ResourceCache 里拿到 confirm 函数的反射信息，进行调用
 func (resourceManager TCCResourceManager) BranchCommit(ctx context.Context, request *apis.BranchCommitRequest) (*apis.BranchCommitResponse, error) {
+	//RM从ResourceCache拿取 ResourceID 就是 ActionName，也就是sample里服务定义的tag的TccActionName的名字
 	resource := resourceManager.ResourceCache[request.ResourceID]
 	if resource == nil {
 		log.Errorf("TCC resource is not exist, resourceID: %s", request.ResourceID)
@@ -40,6 +42,14 @@ func (resourceManager TCCResourceManager) BranchCommit(ctx context.Context, requ
 			Message:    fmt.Sprintf("TCC resource is not exist, resourceID: %s", request.ResourceID),
 		}, nil
 	}
+	//type TCCResource struct {
+	//	ActionName         string
+	//	PrepareMethodName  string
+	//	CommitMethodName   string
+	//	CommitMethod       *proxy.MethodDescriptor
+	//	RollbackMethodName string
+	//	RollbackMethod     *proxy.MethodDescriptor
+	//}
 	tccResource := resource.(*TCCResource)
 	if tccResource.CommitMethod == nil {
 		log.Errorf("TCC resource is not available, resourceID: %s", request.ResourceID)
@@ -53,6 +63,7 @@ func (resourceManager TCCResourceManager) BranchCommit(ctx context.Context, requ
 	businessActionContext := getBusinessActionContext(request.XID, request.BranchID, request.ResourceID, request.ApplicationData)
 	args := make([]interface{}, 0)
 	args = append(args, businessActionContext)
+	//调用RM的 confirm 方法
 	returnValues := proxy.Invoke(tccResource.CommitMethod, nil, args)
 	log.Debugf("TCC resource commit result : %v, xid: %s, branchID: %d, resourceID: %s", returnValues, request.XID, request.BranchID, request.ResourceID)
 	if len(returnValues) == 1 {
@@ -74,6 +85,7 @@ func (resourceManager TCCResourceManager) BranchCommit(ctx context.Context, requ
 	}, nil
 }
 
+//从 ResourceCache 里拿到 cancel 函数的反射信息，进行调用
 func (resourceManager TCCResourceManager) BranchRollback(ctx context.Context, request *apis.BranchRollbackRequest) (*apis.BranchRollbackResponse, error) {
 	resource := resourceManager.ResourceCache[request.ResourceID]
 	if resource == nil {
@@ -115,6 +127,7 @@ func (resourceManager TCCResourceManager) BranchRollback(ctx context.Context, re
 	}, nil
 }
 
+//将XID、BranchID、ActionName 放到context里
 func getBusinessActionContext(xid string, branchID int64, resourceID string, applicationData []byte) *ctx.BusinessActionContext {
 	var (
 		tccContext       = make(map[string]interface{})
@@ -141,6 +154,7 @@ func getBusinessActionContext(xid string, branchID int64, resourceID string, app
 	return businessActionContext
 }
 
+//以 ActionName 为key，存 TCCResource 的对象
 func (resourceManager TCCResourceManager) RegisterResource(resource model.Resource) {
 	resourceManager.ResourceCache[resource.GetResourceID()] = resource
 }

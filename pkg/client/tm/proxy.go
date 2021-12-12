@@ -123,14 +123,14 @@ func Implement(v GlobalTransactionProxyService) {
 				return proxy.ReturnWithError(methodDesc, errors.Errorf("Not Supported Propagation: %s", txInfo.Propagation.String()))
 			}
 
-			//从tc获得xid
+			//从tc获得xid，然后把xid放到invCtx这个context里
 			beginErr := tx.BeginWithTimeoutAndName(txInfo.TimeOut, txInfo.Name, invCtx)
 			if beginErr != nil {
 				return proxy.ReturnWithError(methodDesc, errors.WithStack(beginErr))
 			}
 
 			//真正调用用户定义的函数
-			//这里有了用户定义函数的所有入参和出参类型描述methodDesc，上下文invCtx，入参和出参的值args
+			//这里有了用户定义函数的所有入参和出参类型描述methodDesc，上下文invCtx，入参和出参的值args，其中invCtx里有xid，作为第一个参数传递给原函数，用户再通过这个context把xid传递给RM
 			returnValues = proxy.Invoke(methodDesc, invCtx, args)
 
 			//取最后一个参数，之前有判断过，最后一个必须是error类型，代码就在下面
