@@ -3,7 +3,6 @@ package tcc
 import (
 	"encoding/json"
 	"reflect"
-	"strconv"
 
 	gxnet "github.com/dubbogo/gost/net"
 	"github.com/pkg/errors"
@@ -75,7 +74,10 @@ func ImplementTCC(v TccProxyService) {
 				return proxy.Invoke(methodDesc, nil, args)
 			}
 
-			returnValues, _ := proceed(methodDesc, businessActionContext, resource)
+			returnValues, err := proceed(methodDesc, businessActionContext, resource)
+			if err != nil {
+				return proxy.ReturnWithError(methodDesc, errors.WithStack(err))
+			}
 			return returnValues
 		}
 	}
@@ -144,7 +146,7 @@ func proceed(methodDesc *proxy.MethodDescriptor, ctx *ctx.BusinessActionContext,
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	ctx.BranchID = strconv.FormatInt(branchID, 10)
+	ctx.BranchID = branchID
 
 	args = append(args, ctx)
 	returnValues := proxy.Invoke(methodDesc, nil, args)

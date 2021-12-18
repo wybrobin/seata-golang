@@ -346,7 +346,7 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 	//能到这里的bs是status==PhaseOneFailed 或 PhaseTwoCommitted 或 PhaseTwoCommitFailedCanNotRetry且不是TCC 或 其他状态且不是TCC
 	//我理解就是已经完事了的，要么彻底失败，要么彻底成功的
 
-	//这里只是检查一下是否有branch？？？为啥不用gt直接检查，要生成一个gs？
+	//这里只是检查一下是否有branch？？？为啥不用gt直接检查，要生成一个gs？是不是考虑并发同时修改数据库的情况？
 	gs := tc.holder.FindGlobalTransaction(gt.XID)
 	if gs != nil && gs.HasBranch() {
 		log.Infof("global[%d] committing is NOT done.", gt.XID)
@@ -459,6 +459,7 @@ func (tc *TransactionCoordinator) Rollback(ctx context.Context, request *apis.Gl
 		if err != nil {
 			return false, err
 		}
+
 		if result {	//必定进这里
 			defer tc.locker.Unlock(gt.GlobalSession)
 			if gt.Active {
@@ -724,7 +725,7 @@ func (tc *TransactionCoordinator) BranchCommunicate(stream apis.ResourceManagerS
 				if !ok {
 					return
 				}
-			case msg := <- q:
+			case msg := <-q:
 				err := stream.Send(msg)
 				if err != nil {
 					return
@@ -1101,6 +1102,6 @@ func (tc *TransactionCoordinator) getAddressingIdentities() []string {
 }
 
 func isGlobalSessionTimeout(gt *apis.GlobalSession) bool {
-	//为啥不用 time.Now().UnixMilli() ？？？
+	//为啥不用 time.Now().UnixMilli() ？因为go的旧版本没有这个函数
 	return (time2.CurrentTimeMillis() - uint64(gt.BeginTime)) > uint64(gt.Timeout)
 }

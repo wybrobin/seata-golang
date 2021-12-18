@@ -71,7 +71,10 @@ func main() {
 					apis.RegisterResourceManagerServiceServer(s, tc)
 
 					go func() {
-						//启动了一个http端口为10001的服务，不知道做什么？？？
+						//启动了一个http端口为10001的服务，用来做健康检查
+						http.HandleFunc("/health", func(writer http.ResponseWriter, request *http.Request) {
+							writer.WriteHeader(http.StatusOK)
+						})
 						err = http.ListenAndServe(":10001", nil)
 						if err != nil {
 							return

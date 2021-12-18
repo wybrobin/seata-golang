@@ -51,12 +51,12 @@ CREATE TABLE IF NOT EXISTS `branch_table`
 --也就是branch_table的resource_id和lock_key合起来保存了多个lock_table的主键row_key
 CREATE TABLE IF NOT EXISTS `lock_table`
 (
-    `row_key`        VARCHAR(128) NOT NULL,	--fmt.Sprintf("%s^^^%s^^^%s", resourceID, tableName, pk)
+    `row_key`        VARCHAR(256) NOT NULL,
     `xid`            VARCHAR(96),
     `transaction_id` BIGINT,
     `branch_id`      BIGINT       NOT NULL,
     `resource_id`    VARCHAR(256),
-    `table_name`     VARCHAR(32),
+    `table_name`     VARCHAR(64),
     `pk`             VARCHAR(36),
     `gmt_create`     DATETIME,
     `gmt_modified`   DATETIME,
