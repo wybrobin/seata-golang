@@ -121,11 +121,6 @@ func describeMethod(method reflect.Method) *MethodDescriptor {
 	//将返回值追加到returnValuesType后面，并且不能是私有的
 	for num := 0; num < outNum; num++ {
 		returnValuesType = append(returnValuesType, methodType.Out(num))
-		// need not be a pointer.
-		if !isExportedOrBuiltinType(methodType.Out(num)) {
-			log.Errorf("reply type of method %s not exported{%v}", methodName, methodType.Out(num))
-			return nil
-		}
 	}
 
 	return &MethodDescriptor{
