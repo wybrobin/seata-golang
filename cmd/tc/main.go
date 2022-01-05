@@ -61,7 +61,7 @@ func main() {
 
 					//grpc keepalive配置
 					s := grpc.NewServer(grpc.KeepaliveEnforcementPolicy(cfg.GetEnforcementPolicy()),
-						grpc.KeepaliveParams(cfg.GetServerParameters()))
+						grpc.KeepaliveParams(cfg.GetServerParameters()), grpc.Creds(cfg.GetServerTLS()))
 
 					//生成tc对象，并且启动4个gorouting
 					tc := server.NewTransactionCoordinator(cfg)
