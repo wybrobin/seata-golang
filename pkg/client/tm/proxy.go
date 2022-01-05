@@ -37,7 +37,7 @@ func Implement(v GlobalTransactionProxyService) {
 		log.Errorf("%s must be a struct ptr", valueOf.String())
 		return
 	}
-	proxyService := v.GetProxyService()	//拿到要代理的对象指针，也就是这个对象的一些方法是要运行分布式事务。
+	proxyService := v.GetProxyService() //拿到要代理的对象指针，也就是这个对象的一些方法是要运行分布式事务。
 	// sample里就是Svc类型的对象，Svc有一个函数CreateSo(ctx context.Context, rollback bool) error
 
 	//定义一个函数变量makeCallProxy，返回值也是个函数
@@ -48,7 +48,7 @@ func Implement(v GlobalTransactionProxyService) {
 			var (
 				args                     []interface{}
 				returnValues             []reflect.Value
-				suspendedResourcesHolder *SuspendedResourcesHolder	//保存了一个Xid的struct指针
+				suspendedResourcesHolder *SuspendedResourcesHolder //保存了一个Xid的struct指针
 			)
 
 			if txInfo == nil {
@@ -70,7 +70,7 @@ func Implement(v GlobalTransactionProxyService) {
 			for i := 0; i < inNum; i++ {
 				//里面循环遍历in，如果里面有类型为context.Context的，并且非空，则替换掉invCtx里面的成员变量Context
 				if in[i].Type().String() == "context.Context" {
-					if !in[i].IsNil() {//反射的Value用IsNil来判断是否为空，里面区分了不同类型的不同判断标准
+					if !in[i].IsNil() { //反射的Value用IsNil来判断是否为空，里面区分了不同类型的不同判断标准
 						// the user declared context as method's parameter
 						//如果in里的context里有key为"TX_XID"的，那么就把value取出来，放到localMap里，key和value都是string
 						invCtx = ctx.NewRootContext(in[i].Interface().(context.Context))
@@ -85,7 +85,7 @@ func Implement(v GlobalTransactionProxyService) {
 			//刚开始都是没有的，所以是一个Status=apis.UnknownGlobalStatus，Role=Launcher，XID为空字符串的 DefaultGlobalTransaction
 			tx := GetCurrentOrCreate(invCtx)
 			defer func() {
-				//将suspendedResourcesHolder里保存的Xid写到invCtx里的localMap的key为"TX_XID"里
+				//将 suspendedResourcesHolder 里保存的Xid写到invCtx里的localMap的key为"TX_XID"里
 				//没理解为什么要做这个？？？
 				err := tx.Resume(suspendedResourcesHolder, invCtx)
 				if err != nil {
