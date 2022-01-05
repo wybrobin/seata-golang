@@ -264,7 +264,7 @@ func (driver *driver) FindGlobalSessions(statuses []apis.GlobalSession_GlobalSta
 	err := driver.engine.Table(driver.globalTable).
 		Where(builder.In("status", statuses)).
 		OrderBy("gmt_modified").
-		Limit(driver.queryLimit).	//Ä¬ÈÏ100
+		Limit(driver.queryLimit).	//é»˜è®¤100
 		Find(&globalSessions)
 
 	if err != nil {
@@ -371,8 +371,8 @@ func (driver *driver) UpdateBranchSessionStatus(session *apis.BranchSession, sta
 }
 
 // Remove branch session.
-//É¾³ıbranch_tableÀïµÄ¼ÇÂ¼
-//branch_idÊÇÖ÷¼ü£¬Ö»ĞèÒªwhere branch_id ¾ÍĞĞÁË°É£¿£¿£¿
+//åˆ é™¤branch_tableé‡Œçš„è®°å½•
+//branch_idæ˜¯ä¸»é”®ï¼Œåªéœ€è¦where branch_id å°±è¡Œäº†å§ï¼Ÿï¼Ÿï¼Ÿ
 func (driver *driver) RemoveBranchSession(globalSession *apis.GlobalSession, session *apis.BranchSession) error {
 	_, err := driver.engine.Exec(fmt.Sprintf(DeleteBranchTransaction, driver.branchTable),
 		session.XID,
@@ -383,7 +383,7 @@ func (driver *driver) RemoveBranchSession(globalSession *apis.GlobalSession, ses
 // AcquireLock Acquire lock boolean.
 func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 
-	//È¥ÖØºóµÄ rowLocks£¬ºÍÃ¿¸öÔªËØµÄRowKey
+	//å»é‡åçš„ rowLocksï¼Œå’Œæ¯ä¸ªå…ƒç´ çš„RowKey
 	locks, rowKeyArgs := distinctByKey(rowLocks)
 	var existedRowLocks []*apis.RowLock
 	whereCond := fmt.Sprintf("row_key in %s", sql.MysqlAppendInParam(len(rowKeyArgs)))
@@ -397,11 +397,11 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 	currentXID := locks[0].XID
 	canLock := true
 
-	existedRowKeys := make([]string, 0)	//´æ·Å´ÓÊı¾İ¿âÀï²é³öÀ´ÒÑ¾­±»µ±Ç°XIDËø×¡µÄ RowKey
-	unrepeatedLocks := make([]*apis.RowLock, 0)	//´æ·Åµ±Ç°ÇëÇóÒªÈ¥Ëø£¬µ«ÊÇÖ®Ç°²»ÔÚÊı¾İ¿âÖĞµÄ RowKey
+	existedRowKeys := make([]string, 0)	//å­˜æ”¾ä»æ•°æ®åº“é‡ŒæŸ¥å‡ºæ¥å·²ç»è¢«å½“å‰XIDé”ä½çš„ RowKey
+	unrepeatedLocks := make([]*apis.RowLock, 0)	//å­˜æ”¾å½“å‰è¯·æ±‚è¦å»é”ï¼Œä½†æ˜¯ä¹‹å‰ä¸åœ¨æ•°æ®åº“ä¸­çš„ RowKey
 	for _, rowLock := range existedRowLocks {
 
-		if rowLock.XID != currentXID {//¼ì²éµ±Ç°ÇëÇó¹ıÀ´µÄ lockKey ²ğ·ÖºóµÄ rowKey£¬´ÓÊı¾İ¿âÀï²é³öÀ´ºó£¬ÊÇ·ñÒÑ¾­±»ÆäËûµÄXIDÕ¼ÓÃ
+		if rowLock.XID != currentXID {//æ£€æŸ¥å½“å‰è¯·æ±‚è¿‡æ¥çš„ lockKey æ‹†åˆ†åçš„ rowKeyï¼Œä»æ•°æ®åº“é‡ŒæŸ¥å‡ºæ¥åï¼Œæ˜¯å¦å·²ç»è¢«å…¶ä»–çš„XIDå ç”¨
 			log.Infof("row lock [%s] on %s:%s is holding by xid {%s} branchID {%d}", rowLock.RowKey, driver.lockTable, rowLock.TableName,
 				rowLock.PK, rowLock.XID, rowLock.BranchID)
 			canLock = false
@@ -409,11 +409,11 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 		}
 		existedRowKeys = append(existedRowKeys, rowLock.RowKey)
 	}
-	//Èç¹ûÇëÇó¹ıÀ´µÄ lockKey ²ğ·ÖºóµÄ rowKey ÔÚÊı¾İ¿âÀï²»´æÔÚ£¬»òÕß±¾À´¾ÍÊôÓÚµ±Ç°ÇëÇóµÄXID£¬ÄÇÃ´¾Í¿ÉÒÔËø×¡
+	//å¦‚æœè¯·æ±‚è¿‡æ¥çš„ lockKey æ‹†åˆ†åçš„ rowKey åœ¨æ•°æ®åº“é‡Œä¸å­˜åœ¨ï¼Œæˆ–è€…æœ¬æ¥å°±å±äºå½“å‰è¯·æ±‚çš„XIDï¼Œé‚£ä¹ˆå°±å¯ä»¥é”ä½
 	if !canLock {
 		return false
 	}
-	//´Ó locks ÀïÌô³ö²»ÔÚ existedRowKeys ÀïµÄ£¬¾ÍÊÇ unrepeatedLocks
+	//ä» locks é‡ŒæŒ‘å‡ºä¸åœ¨ existedRowKeys é‡Œçš„ï¼Œå°±æ˜¯ unrepeatedLocks
 	if len(existedRowKeys) > 0 {
 		for _, lock := range locks {
 			if !contains(existedRowKeys, lock.RowKey) {
@@ -424,7 +424,7 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 		unrepeatedLocks = locks
 	}
 
-	//ËµÃ÷ÇëÇóµÄËøÒÑ¾­¶¼ÔÚXIDÃûÏÂÁË£¬¾Í²»ÓÃÔÙÉêÇë¶àÓàµÄËøÁË
+	//è¯´æ˜è¯·æ±‚çš„é”å·²ç»éƒ½åœ¨XIDåä¸‹äº†ï¼Œå°±ä¸ç”¨å†ç”³è¯·å¤šä½™çš„é”äº†
 	if len(unrepeatedLocks) == 0 {
 		return true
 	}
@@ -435,7 +435,7 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 		sqlOrArgs []interface{}
 	)
 
-	//¹¹Ôì²åÈëµÄsqlÓï¾ä
+	//æ„é€ æ’å…¥çš„sqlè¯­å¥
 	for i := 0; i < len(unrepeatedLocks); i++ {
 		sb.WriteString("(?, ?, ?, ?, ?, ?, ?, now(), now()),")
 		args = append(args, unrepeatedLocks[i].XID, unrepeatedLocks[i].TransactionID, unrepeatedLocks[i].BranchID,
@@ -443,13 +443,13 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 	}
 	values := sb.String()
 
-	valueStr := values[:len(values)-1]	//È¥µô×îºóÒ»¸ö,ºÅ
+	valueStr := values[:len(values)-1]	//å»æ‰æœ€åä¸€ä¸ª,å·
 
 	//insert into lock_table (xid, transaction_id, branch_id, resource_id, table_name, pk, row_key, gmt_create,
 	//		gmt_modified) values (?, ?, ?, ?, ?, ?, ?, now(), now()), (?, ?, ?, ?, ?, ?, ?, now(), now()), ...
 	sqlOrArgs = append(sqlOrArgs, fmt.Sprintf(InsertRowLock, driver.lockTable, valueStr))
 	sqlOrArgs = append(sqlOrArgs, args...)
-	// sqlOrArgs µÄµÚÒ»¸öÖµÊÇsqlÓï¾ä×Ö·û´®£¬ºóÃæÊÇ args
+	// sqlOrArgs çš„ç¬¬ä¸€ä¸ªå€¼æ˜¯sqlè¯­å¥å­—ç¬¦ä¸²ï¼Œåé¢æ˜¯ args
 	_, err = driver.engine.Exec(sqlOrArgs...)
 	if err != nil {
 		// In an extremely high concurrency scenario, the row lock has been written to the database,
@@ -461,8 +461,9 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 	return true
 }
 
-//½«Èë²ÎÍ¨¹ımap¶Ô RowKey ½øĞĞÈ¥ÖØ£¬È»ºó·µ»ØÈ¥ÖØºóµÄ RowLock listºÍ¶ÔÓ¦µÄ RowKey list	result := make([]*apis.RowLock, 0)
-
+//å°†å…¥å‚é€šè¿‡mapå¯¹ RowKey è¿›è¡Œå»é‡ï¼Œç„¶åè¿”å›å»é‡åçš„ RowLock listå’Œå¯¹åº”çš„ RowKey list	result := make([]*apis.RowLock, 0)
+func distinctByKey(locks []*apis.RowLock) ([]*apis.RowLock, []interface{}) {
+	result := make([]*apis.RowLock, 0)
 	rowKeys := make([]interface{}, 0)
 	lockMap := make(map[string]byte)
 	for _, lockDO := range locks {
@@ -476,7 +477,7 @@ func (driver *driver) AcquireLock(rowLocks []*apis.RowLock) bool {
 	return result, rowKeys
 }
 
-//eÊÇ·ñÔÚsÀïÃæ´æÔÚ
+//eæ˜¯å¦åœ¨sé‡Œé¢å­˜åœ¨
 func contains(s []string, e string) bool {
 	for _, a := range s {
 		if a == e {
@@ -487,7 +488,7 @@ func contains(s []string, e string) bool {
 }
 
 // ReleaseLock Unlock boolean.
-//É¾³ılock_table±íÀï£¬ËùÓĞrow_keyµÈÓÚrowLocksÀïµÄRowKeyµÄ£¬²¢ÇÒxidµÈÓÚrowLocksÀïµÚÒ»¸öµÄxid£¬ËüÃÇµÄxid¶¼ÊÇÒ»ÑùµÄ£¬¶¼ÊÇÀ´×ÔÍ¬Ò»¸öbranch_table
+//åˆ é™¤lock_tableè¡¨é‡Œï¼Œæ‰€æœ‰row_keyç­‰äºrowLocksé‡Œçš„RowKeyçš„ï¼Œå¹¶ä¸”xidç­‰äºrowLocksé‡Œç¬¬ä¸€ä¸ªçš„xidï¼Œå®ƒä»¬çš„xidéƒ½æ˜¯ä¸€æ ·çš„ï¼Œéƒ½æ˜¯æ¥è‡ªåŒä¸€ä¸ªbranch_table
 func (driver *driver) ReleaseLock(rowLocks []*apis.RowLock) bool {
 	if rowLocks != nil && len(rowLocks) == 0 {
 		return true
