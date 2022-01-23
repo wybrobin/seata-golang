@@ -61,22 +61,9 @@ func Init(serverNode int64) error {
 //有点类似雪花算法，低12位保存自增值，然后中间41位保存加工过的毫秒时间戳，剩下的高位保存workerID，由serverNode生成。
 //也就是如果每毫秒生成数量超过4096，那么就会导致id重复
 func NextID() int64 {
-	waitIfNecessary()
 	next := atomic.AddUint64(&timestampAndSequence, 1)
 	timestampWithSequence := next & timestampAndSequenceMask
 	return int64(uint64(workerID) | timestampWithSequence)
-}
-
-//通过原子的方式拿取init()时候保存的一个当前时间毫秒级减去2020-05-03时间戳再左移12位的结果，
-//然后再在这个函数里反向操作后跟当前时间比较，如果当前时间要早于init()时间，则循环等待，
-//参考文章：https://seata.io/zh-cn/blog/seata-analysis-UUID-generator.html
-func waitIfNecessary() {
-	currentWithSequence := atomic.LoadUint64(&timestampAndSequence)
-	current := currentWithSequence >> sequenceBits
-	newest := getNewestTimestamp()
-	for current >= newest {
-		newest = getNewestTimestamp()
-	}
 }
 
 // get newest timestamp relative to twepoch

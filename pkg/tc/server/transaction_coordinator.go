@@ -35,6 +35,7 @@ type TransactionCoordinator struct {
 	sync.Mutex
 	maxCommitRetryTimeout            int64
 	maxRollbackRetryTimeout          int64
+	rollbackDeadSeconds              int64
 	rollbackRetryTimeoutUnlockEnable bool
 
 	asyncCommittingRetryPeriod time.Duration
@@ -66,6 +67,7 @@ func NewTransactionCoordinator(conf *config.Configuration) *TransactionCoordinat
 	tc := &TransactionCoordinator{
 		maxCommitRetryTimeout:            conf.Server.MaxCommitRetryTimeout,
 		maxRollbackRetryTimeout:          conf.Server.MaxRollbackRetryTimeout,
+		rollbackDeadSeconds:              conf.Server.RollbackDeadSeconds,
 		rollbackRetryTimeoutUnlockEnable: conf.Server.RollbackRetryTimeoutUnlockEnable,
 
 		asyncCommittingRetryPeriod: conf.Server.AsyncCommittingRetryPeriod,
@@ -265,17 +267,6 @@ func (tc *TransactionCoordinator) doGlobalCommit(gt *model.GlobalTransaction, re
 	}
 
 	for bs := range gt.BranchSessions {
-		//如果状态为PhaseOneFailed，则从branch_table表中删除
-		if bs.Status == apis.PhaseOneFailed {
-			tc.resourceDataLocker.ReleaseLock(bs)
-			delete(gt.BranchSessions, bs)
-			//删除branch_table表中xid和branch_id与bs里保存相等的
-			err = tc.holder.RemoveBranchSession(gt.GlobalSession, bs)
-			if err != nil {
-				return false, err
-			}
-			continue
-		}
 		//通过RM，让RM commit，然后等待RM的响应，通过 BranchCommunicate 这个stream进行通信
 		branchStatus, err1 := tc.branchCommit(bs)
 		if err1 != nil {
@@ -1007,7 +998,7 @@ func (tc *TransactionCoordinator) handleRetryRollingBack() {
 	}
 	now := time2.CurrentTimeMillis()
 	for _, transaction := range rollbackTransactions {
-		if transaction.Status == apis.RollingBack && !transaction.IsRollingBackDead() { //不大于12s？？？
+		if transaction.Status == apis.RollingBack && !tc.IsRollingBackDead(transaction) {
 			continue
 		}
 		//默认配置maxRollbackRetryTimeout为-1，不会进这里
@@ -1034,6 +1025,10 @@ func isRetryTimeout(now int64, timeout int64, beginTime int64) bool {
 		return true
 	}
 	return false
+}
+
+func (tc *TransactionCoordinator) IsRollingBackDead(gt *model.GlobalTransaction) bool {
+	return (time2.CurrentTimeMillis() - uint64(gt.BeginTime)) > uint64(tc.rollbackDeadSeconds)
 }
 
 func (tc *TransactionCoordinator) handleRetryCommitting() {
